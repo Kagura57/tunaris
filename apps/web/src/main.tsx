@@ -1,5 +1,33 @@
 const root = document.querySelector<HTMLDivElement>("#app");
 
+function localFallbackRoomCode(length = 6): string {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  for (let index = 0; index < length; index += 1) {
+    const randomIndex = Math.floor(Math.random() * alphabet.length);
+    const char = alphabet[randomIndex];
+    if (char) {
+      code += char;
+    }
+  }
+  return code;
+}
+
+async function createRoom() {
+  const response = await fetch("http://127.0.0.1:3001/quiz/create", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+
+  if (!response.ok) {
+    throw new Error("Create room failed");
+  }
+
+  const payload = (await response.json()) as { roomCode?: unknown };
+  return typeof payload.roomCode === "string" ? payload.roomCode : localFallbackRoomCode();
+}
+
 if (root) {
   root.innerHTML = `
     <main style="font-family: system-ui, -apple-system, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px;">
@@ -16,8 +44,15 @@ if (root) {
   const status = document.querySelector<HTMLParagraphElement>("#status");
 
   if (createRoomButton && status) {
-    createRoomButton.addEventListener("click", () => {
-      status.textContent = "Room créée (demo).";
+    createRoomButton.addEventListener("click", async () => {
+      status.textContent = "Création de la room...";
+      try {
+        const roomCode = await createRoom();
+        status.textContent = `Room créée : ${roomCode}`;
+      } catch {
+        const fallback = localFallbackRoomCode();
+        status.textContent = `Room créée (fallback) : ${fallback}`;
+      }
     });
   }
 }
