@@ -35,4 +35,3 @@ export async function createRoomWithFallback() {
 
   return { roomCode: localFallbackRoomCode(), source: "fallback" as const };
 }
-

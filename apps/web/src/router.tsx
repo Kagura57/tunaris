@@ -40,7 +40,13 @@ const resultsRoute = createRoute({
   component: ResultsPage,
 });
 
-const routeTree = rootRoute.addChildren([homeRoute, joinRoute, lobbyRoute, playRoute, resultsRoute]);
+const routeTree = rootRoute.addChildren([
+  homeRoute,
+  joinRoute,
+  lobbyRoute,
+  playRoute,
+  resultsRoute,
+]);
 
 export const router = createRouter({ routeTree });
 
@@ -49,4 +55,3 @@ declare module "@tanstack/react-router" {
     router: typeof router;
   }
 }
-

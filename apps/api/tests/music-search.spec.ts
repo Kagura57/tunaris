@@ -24,4 +24,3 @@ describe("music search route", () => {
     );
   });
 });
-

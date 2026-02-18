@@ -39,7 +39,9 @@ describe("core flow integration", () => {
     expect(started.ok).toBe(true);
     expect(started.state).toBe("countdown");
 
-    const snapshotRes = await app.handle(new Request(`http://localhost/room/${created.roomCode}/state`));
+    const snapshotRes = await app.handle(
+      new Request(`http://localhost/room/${created.roomCode}/state`),
+    );
     expect(snapshotRes.status).toBe(200);
     const snapshot = (await snapshotRes.json()) as { state: string; playerCount: number };
     expect(snapshot.state).toBe("countdown");
