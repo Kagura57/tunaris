@@ -12,8 +12,9 @@ export function ResultsPage() {
   });
 
   return (
-    <section className="card stack">
-      <h2 className="section-title">Résultats</h2>
+    <section className="card stack screen-enter">
+      <p className="eyebrow">Scoreboard</p>
+      <h2 className="section-title section-title-neon">Resultats</h2>
       <p className="section-copy">Classement actuel de la room {roomCode}</p>
 
       {resultsQuery.isError && (
@@ -21,10 +22,11 @@ export function ResultsPage() {
       )}
 
       {!resultsQuery.isError && (
-        <ol className="list">
+        <ol className="scoreboard">
           {(resultsQuery.data?.ranking ?? []).map((entry) => (
             <li key={entry.playerId}>
-              {entry.displayName} · {entry.score} pts · streak max {entry.maxStreak}
+              <strong>#{entry.rank}</strong> {entry.displayName} · {entry.score} pts · streak max{" "}
+              {entry.maxStreak}
             </li>
           ))}
         </ol>

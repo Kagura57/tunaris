@@ -37,6 +37,7 @@ export function HomePage() {
     },
     onSuccess: (result) => {
       if (!result.playerId) return;
+
       setSession({
         roomCode: result.roomCode,
         playerId: result.playerId,
@@ -60,12 +61,13 @@ export function HomePage() {
       : "status";
 
   return (
-    <section className="card stack">
-      <h2 className="section-title">Créer une partie</h2>
-      <p className="section-copy">Démarre une room, puis lance la partie depuis le lobby.</p>
+    <section className="card stack screen-enter">
+      <p className="eyebrow">Host Console</p>
+      <h2 className="section-title section-title-neon">Créer une partie</h2>
+      <p className="section-copy">Crée la room et lance la manche depuis le lobby.</p>
 
       <label className="field">
-        <span className="label">Ton pseudo</span>
+        <span className="label">Pseudo host</span>
         <input
           className="input"
           value={displayName}
@@ -107,11 +109,11 @@ export function HomePage() {
         {!createRoomMutation.isPending &&
           !createRoomMutation.isError &&
           !createRoomMutation.isSuccess &&
-          "Prêt pour une nouvelle partie."}
+          "Prêt pour un nouveau run."}
       </p>
 
       {status?.source === "fallback" && (
-        <p className="status">API indisponible: code local généré pour le mode dev.</p>
+        <p className="helper">API indisponible: mode local activé pour continuer en dev.</p>
       )}
     </section>
   );

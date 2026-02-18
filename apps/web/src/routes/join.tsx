@@ -24,6 +24,7 @@ export function JoinPage() {
         displayName: displayName.trim(),
         isHost: false,
       });
+
       navigate({
         to: "/lobby/$roomCode",
         params: { roomCode: normalizedCode },
@@ -38,9 +39,10 @@ export function JoinPage() {
   }
 
   return (
-    <section className="card stack">
-      <h2 className="section-title">Rejoindre une room</h2>
-      <p className="section-copy">Entre le code room et ton pseudo.</p>
+    <section className="card stack screen-enter">
+      <p className="eyebrow">Player Entry</p>
+      <h2 className="section-title section-title-neon">Rejoindre une room</h2>
+      <p className="section-copy">Code + pseudo, puis entrée directe au lobby.</p>
 
       <form className="stack" onSubmit={onSubmit}>
         <label className="field">
@@ -75,7 +77,6 @@ export function JoinPage() {
       <p className={joinMutation.isError ? "status status-error" : "status"}>
         {joinMutation.isPending && "Connexion en cours..."}
         {joinMutation.isError && "Impossible de rejoindre cette room."}
-        {!joinMutation.isPending && !joinMutation.isError && ""}
       </p>
     </section>
   );

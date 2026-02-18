@@ -35,19 +35,33 @@ export function PlayPage() {
   }
 
   return (
-    <section className="card stack">
-      <h2 className="section-title">Partie en cours</h2>
+    <section className="card stack screen-enter">
+      <p className="eyebrow">Round Console</p>
+      <h2 className="section-title section-title-neon">Partie en cours</h2>
       <p className="section-copy">Room {roomCode}</p>
 
-      <div className="inline-meta">
-        <div>État: {roomStateQuery.data?.state ?? "loading"}</div>
-        <div>Round: {roomStateQuery.data?.round ?? "-"}</div>
-        <div>Joueurs: {roomStateQuery.data?.playerCount ?? "-"}</div>
+      <div className="meta-grid">
+        <article className="meta-tile">
+          <p className="meta-label">Etat</p>
+          <p className="meta-value">{roomStateQuery.data?.state ?? "loading"}</p>
+        </article>
+        <article className="meta-tile">
+          <p className="meta-label">Round</p>
+          <p className="meta-value">{roomStateQuery.data?.round ?? "-"}</p>
+        </article>
+        <article className="meta-tile">
+          <p className="meta-label">Joueurs</p>
+          <p className="meta-value">{roomStateQuery.data?.playerCount ?? "-"}</p>
+        </article>
+        <article className="meta-tile">
+          <p className="meta-label">Player ID</p>
+          <p className="meta-value">{session.playerId ?? "non connecte"}</p>
+        </article>
       </div>
 
       <form className="stack" onSubmit={onSubmit}>
         <label className="field">
-          <span className="label">Ta réponse</span>
+          <span className="label">Ta reponse</span>
           <input
             className="input"
             value={answer}
@@ -76,7 +90,7 @@ export function PlayPage() {
               })
             }
           >
-            Voir les résultats
+            Voir les resultats
           </button>
         </div>
       </form>
@@ -88,10 +102,10 @@ export function PlayPage() {
             : "status"
         }
       >
-        {!session.playerId && "Tu dois rejoindre la room avant de répondre."}
+        {!session.playerId && "Tu dois rejoindre la room avant de repondre."}
         {roomStateQuery.isError && "Impossible de synchroniser la room."}
-        {answerMutation.isError && "Réponse refusée ou invalide."}
-        {answerMutation.isSuccess && "Réponse envoyée."}
+        {answerMutation.isError && "Reponse refusee ou invalide."}
+        {answerMutation.isSuccess && "Reponse envoyee."}
       </p>
     </section>
   );

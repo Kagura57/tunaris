@@ -29,15 +29,28 @@ export function LobbyPage() {
   const state = roomStateQuery.data;
 
   return (
-    <section className="card stack">
-      <h2 className="section-title">Lobby {roomCode}</h2>
-      <p className="section-copy">Les joueurs se regroupent ici avant le lancement de la partie.</p>
+    <section className="card stack screen-enter">
+      <p className="eyebrow">Room Control</p>
+      <h2 className="section-title section-title-neon">Lobby {roomCode}</h2>
+      <p className="section-copy">Synchronisation live de la room avant démarrage.</p>
 
-      <div className="inline-meta">
-        <div>État: {state?.state ?? "loading"}</div>
-        <div>Joueurs: {state?.playerCount ?? "-"}</div>
-        <div>Pool préchargé: {state?.poolSize ?? "-"}</div>
-        <div>Catégorie: {state?.categoryQuery ?? session.categoryQuery}</div>
+      <div className="meta-grid">
+        <article className="meta-tile">
+          <p className="meta-label">Etat</p>
+          <p className="meta-value">{state?.state ?? "loading"}</p>
+        </article>
+        <article className="meta-tile">
+          <p className="meta-label">Joueurs</p>
+          <p className="meta-value">{state?.playerCount ?? "-"}</p>
+        </article>
+        <article className="meta-tile">
+          <p className="meta-label">Pool</p>
+          <p className="meta-value">{state?.poolSize ?? "-"}</p>
+        </article>
+        <article className="meta-tile">
+          <p className="meta-label">Categorie</p>
+          <p className="meta-value">{state?.categoryQuery ?? session.categoryQuery}</p>
+        </article>
       </div>
 
       <div className="button-row">
@@ -47,11 +60,11 @@ export function LobbyPage() {
             onClick={() => startMutation.mutate()}
             disabled={startMutation.isPending}
           >
-            {startMutation.isPending ? "Lancement..." : "Démarrer la partie"}
+            {startMutation.isPending ? "Lancement..." : "Demarrer la partie"}
           </button>
         )}
         <button className="btn btn-secondary" onClick={() => roomStateQuery.refetch()}>
-          Rafraîchir
+          Rafraichir
         </button>
         <button
           className="btn btn-secondary"
@@ -72,9 +85,9 @@ export function LobbyPage() {
         }
       >
         {roomStateQuery.isLoading && "Synchronisation du lobby..."}
-        {roomStateQuery.isError && "Impossible de charger l'état de la room."}
-        {startMutation.isError && "Le lancement a échoué."}
-        {startMutation.isSuccess && "Partie démarrée. Passe sur l'écran de jeu."}
+        {roomStateQuery.isError && "Impossible de charger l'etat de la room."}
+        {startMutation.isError && "Le lancement a echoue."}
+        {startMutation.isSuccess && "Partie demarree. Passe sur l'ecran de jeu."}
       </p>
     </section>
   );
