@@ -3,7 +3,10 @@
   "private": true,
   "workspaces": ["apps/*", "packages/*"],
   "scripts": {
-    "test": "bun test apps/api/tests packages/shared/src apps/web/src/routes"
+    "dev:web": "cd apps/web && bun run dev",
+    "test": "bun test apps/api/tests packages/shared/src apps/web/src/routes",
+    "test:e2e": "npx playwright test",
+    "test:e2e:list": "npx playwright test --list"
   },
   "devDependencies": {
     "@playwright/test": "1.58.2",
