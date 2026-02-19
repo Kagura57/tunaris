@@ -6,6 +6,7 @@ export type MusicTrack = {
   title: string;
   artist: string;
   previewUrl: string | null;
+  sourceUrl: string | null;
 };
 
 export type ProviderSearchFn = (query: string, limit: number) => Promise<MusicTrack[]>;

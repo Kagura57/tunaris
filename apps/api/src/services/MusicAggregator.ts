@@ -4,6 +4,7 @@ import { searchSpotify } from "../routes/music/spotify";
 import { searchTidal } from "../routes/music/tidal";
 import { searchYouTube } from "../routes/music/youtube";
 import { searchYTMusic } from "../routes/music/ytmusic";
+import { logEvent } from "../lib/logger";
 import type { MusicProvider, MusicTrack, ProviderSearchFn } from "./music-types";
 
 export const PROVIDER_ORDER: MusicProvider[] = [
@@ -19,7 +20,6 @@ type UnifiedSearchOptions = {
   searchers?: Partial<Record<MusicProvider, ProviderSearchFn>>;
   providerOrder?: MusicProvider[];
   targetFallbackCount?: number;
-  allowMockFallback?: boolean;
 };
 
 type UnifiedSearchResult = {
@@ -60,7 +60,7 @@ function buildFallback(
   targetFallbackCount: number,
 ) {
   const seen = new Set<string>();
-  const fallback: MusicTrack[] = [];
+  const uniqueTracks: MusicTrack[] = [];
 
   for (const provider of providerOrder) {
     const tracks = perProvider[provider];
@@ -68,14 +68,13 @@ function buildFallback(
       const signature = trackSignature(track);
       if (seen.has(signature)) continue;
       seen.add(signature);
-      fallback.push(track);
-      if (fallback.length >= targetFallbackCount) {
-        return fallback;
-      }
+      uniqueTracks.push(track);
     }
   }
 
-  return fallback;
+  const withPreview = uniqueTracks.filter((track) => Boolean(track.previewUrl));
+  const withoutPreview = uniqueTracks.filter((track) => !track.previewUrl);
+  return [...withPreview, ...withoutPreview].slice(0, targetFallbackCount);
 }
 
 function readErrorMessage(error: unknown) {
@@ -83,30 +82,6 @@ function readErrorMessage(error: unknown) {
     return error.message;
   }
   return "UNKNOWN_ERROR";
-}
-
-function createMockTracks(query: string, limit: number): MusicTrack[] {
-  const safeQuery = query.trim().length > 0 ? query.trim() : "mix";
-  const providers: MusicProvider[] = [
-    "spotify",
-    "deezer",
-    "apple-music",
-    "tidal",
-    "ytmusic",
-    "youtube",
-  ];
-
-  return Array.from({ length: limit }, (_, index) => {
-    const provider = providers[index % providers.length] ?? "spotify";
-    const number = index + 1;
-    return {
-      provider,
-      id: `mock-${provider}-${number}`,
-      title: `${safeQuery} track ${number}`,
-      artist: `Mock Artist ${number}`,
-      previewUrl: null,
-    };
-  });
 }
 
 export async function unifiedMusicSearch(
@@ -129,22 +104,41 @@ export async function unifiedMusicSearch(
         providerResults[provider] = await searcher(query, safeLimit);
       } catch (error) {
         providerResults[provider] = [];
-        providerErrors[provider] = readErrorMessage(error);
+        const message = readErrorMessage(error);
+        providerErrors[provider] = message;
+        logEvent("warn", "music_provider_failed", {
+          provider,
+          query,
+          limit: safeLimit,
+          error: message,
+        });
       }
     }),
   );
 
   const fallback = buildFallback(providerResults, providerOrder, targetFallbackCount);
-  const allowMockFallback = options.allowMockFallback ?? true;
-  const fallbackResult =
-    fallback.length > 0 || !allowMockFallback
-      ? fallback
-      : createMockTracks(query, targetFallbackCount);
+
+  const failedProviders = Object.keys(providerErrors);
+  if (failedProviders.length > 0) {
+    logEvent("warn", "music_provider_partial_outage", {
+      query,
+      failedProviders,
+      fallbackCount: fallback.length,
+      requestedLimit: safeLimit,
+    });
+  }
+
+  if (fallback.length === 0) {
+    logEvent("warn", "music_no_fallback_tracks", {
+      query,
+      requestedLimit: safeLimit,
+    });
+  }
 
   return {
     query,
     limit: safeLimit,
-    fallback: fallbackResult,
+    fallback,
     results: providerResults,
     providerErrors,
   };
@@ -154,7 +148,6 @@ export async function buildTrackPool(categoryQuery: string, size = 8) {
   const safeSize = Math.max(1, Math.min(size, 50));
   const aggregated = await unifiedMusicSearch(categoryQuery, safeSize, {
     targetFallbackCount: safeSize,
-    allowMockFallback: true,
   });
   return aggregated.fallback;
 }

@@ -34,6 +34,11 @@ export async function searchTidal(query: string, limit = 10): Promise<MusicTrack
 
   const payload = (await fetchJsonWithTimeout(url, {
     headers: { authorization: `Bearer ${token}` },
+  }, {
+    context: {
+      provider: "tidal",
+      query,
+    },
   })) as TidalPayload | null;
   const items = payload?.data ?? [];
 
@@ -49,6 +54,7 @@ export async function searchTidal(query: string, limit = 10): Promise<MusicTrack
         title,
         artist,
         previewUrl: item.previewUrl ?? item.preview_url ?? null,
+        sourceUrl: `https://listen.tidal.com/track/${id}`,
       };
     })
     .filter((value): value is MusicTrack => value !== null);

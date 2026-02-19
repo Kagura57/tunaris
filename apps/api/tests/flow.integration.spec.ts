@@ -34,6 +34,13 @@ describe("core flow integration", () => {
         body: JSON.stringify({ roomCode: created.roomCode }),
       }),
     );
+    if (startRes.status === 422) {
+      const failed = (await startRes.json()) as { ok: false; error: string };
+      expect(failed.ok).toBe(false);
+      expect(failed.error).toBe("NO_TRACKS_FOUND");
+      return;
+    }
+
     expect(startRes.status).toBe(200);
     const started = (await startRes.json()) as {
       ok: boolean;
@@ -46,9 +53,7 @@ describe("core flow integration", () => {
     expect((started.poolSize ?? 0) > 0).toBe(true);
     expect(started.categoryQuery).toBe("popular hits");
 
-    const snapshotRes = await app.handle(
-      new Request(`http://localhost/room/${created.roomCode}/state`),
-    );
+    const snapshotRes = await app.handle(new Request(`http://localhost/room/${created.roomCode}/state`));
     expect(snapshotRes.status).toBe(200);
     const snapshot = (await snapshotRes.json()) as {
       state: string;

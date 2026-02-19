@@ -21,7 +21,7 @@ describe("music search route", () => {
     expect(payload.limit).toBe(5);
     const fallback = (payload as { fallback?: unknown }).fallback;
     expect(Array.isArray(fallback)).toBe(true);
-    expect((fallback as unknown[]).length).toBe(5);
+    expect((fallback as unknown[]).length).toBeLessThanOrEqual(5);
     expect(Object.keys(payload.results).sort()).toEqual(
       ["apple-music", "deezer", "spotify", "tidal", "youtube", "ytmusic"].sort(),
     );

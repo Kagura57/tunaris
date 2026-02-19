@@ -7,13 +7,15 @@ function track(
   id: string,
   title: string,
   artist: string,
+  previewUrl: string | null = null,
 ): MusicTrack {
   return {
     provider,
     id,
     title,
     artist,
-    previewUrl: null,
+    previewUrl,
+    sourceUrl: null,
   };
 }
 
@@ -61,5 +63,22 @@ describe("MusicAggregator", () => {
     expect(result.providerErrors.spotify).toBe("SPOTIFY_DOWN");
     expect(result.results.deezer).toHaveLength(1);
     expect(result.fallback[0]?.provider).toBe("deezer");
+  });
+
+  it("prioritizes tracks with preview urls in fallback", async () => {
+    const result = await unifiedMusicSearch("test", 5, {
+      targetFallbackCount: 2,
+      searchers: {
+        spotify: async () => [track("spotify", "1", "Song Silent", "Artist A", null)],
+        deezer: async () => [track("deezer", "2", "Song Loud", "Artist B", "https://preview.test/2.mp3")],
+        "apple-music": async () => [],
+        tidal: async () => [],
+        ytmusic: async () => [],
+        youtube: async () => [],
+      },
+    });
+
+    expect(result.fallback[0]?.title).toBe("Song Loud");
+    expect(result.fallback[0]?.previewUrl).toBe("https://preview.test/2.mp3");
   });
 });

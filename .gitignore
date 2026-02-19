@@ -12,6 +12,7 @@ coverage/
 .cache/
 playwright-report/
 test-results/
+apps/api/data/
 
 # Env files
 .env

@@ -2,9 +2,8 @@ import { createRootRoute, createRoute, createRouter } from "@tanstack/react-rout
 import { RootLayout } from "./routes/__root";
 import { HomePage } from "./routes/index";
 import { JoinPage } from "./routes/join";
-import { LobbyPage } from "./routes/lobby/$roomCode";
-import { PlayPage } from "./routes/play/$roomCode";
-import { ResultsPage } from "./routes/results/$roomCode";
+import { RoomPlayPage } from "./routes/room/$roomCode/play";
+import { RoomViewPage } from "./routes/room/$roomCode/view";
 
 const rootRoute = createRootRoute({
   component: RootLayout,
@@ -22,31 +21,19 @@ const joinRoute = createRoute({
   component: JoinPage,
 });
 
-const lobbyRoute = createRoute({
+const roomPlayRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/lobby/$roomCode",
-  component: LobbyPage,
+  path: "/room/$roomCode/play",
+  component: RoomPlayPage,
 });
 
-const playRoute = createRoute({
+const roomViewRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/play/$roomCode",
-  component: PlayPage,
+  path: "/room/$roomCode/view",
+  component: RoomViewPage,
 });
 
-const resultsRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/results/$roomCode",
-  component: ResultsPage,
-});
-
-const routeTree = rootRoute.addChildren([
-  homeRoute,
-  joinRoute,
-  lobbyRoute,
-  playRoute,
-  resultsRoute,
-]);
+const routeTree = rootRoute.addChildren([homeRoute, joinRoute, roomPlayRoute, roomViewRoute]);
 
 export const router = createRouter({ routeTree });
 

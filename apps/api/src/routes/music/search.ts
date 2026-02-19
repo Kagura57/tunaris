@@ -1,4 +1,5 @@
 import { Elysia } from "elysia";
+import { logEvent } from "../../lib/logger";
 import { unifiedMusicSearch } from "../../services/MusicAggregator";
 
 function parseLimit(raw: string | undefined) {
@@ -18,6 +19,14 @@ export const musicSearchRoute = new Elysia({ prefix: "/music" }).get(
       return { error: "MISSING_QUERY" };
     }
 
-    return unifiedMusicSearch(q, limit);
+    const result = await unifiedMusicSearch(q, limit);
+    if (Object.keys(result.providerErrors).length > 0) {
+      logEvent("warn", "music_search_provider_errors", {
+        query: q,
+        limit,
+        providerErrors: result.providerErrors,
+      });
+    }
+    return result;
   },
 );

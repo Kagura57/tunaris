@@ -7,6 +7,7 @@ type YTMusicPayload = {
     title?: string;
     artist?: string;
     previewUrl?: string | null;
+    sourceUrl?: string | null;
   }>;
 };
 
@@ -18,7 +19,12 @@ export async function searchYTMusic(query: string, limit = 10): Promise<MusicTra
   url.searchParams.set("q", query);
   url.searchParams.set("limit", String(limit));
 
-  const payload = (await fetchJsonWithTimeout(url)) as YTMusicPayload | null;
+  const payload = (await fetchJsonWithTimeout(url, {}, {
+    context: {
+      provider: "ytmusic",
+      query,
+    },
+  })) as YTMusicPayload | null;
   const items = payload?.data ?? [];
 
   return items
@@ -32,6 +38,7 @@ export async function searchYTMusic(query: string, limit = 10): Promise<MusicTra
         title,
         artist,
         previewUrl: item.previewUrl ?? null,
+        sourceUrl: item.sourceUrl ?? `https://www.youtube.com/watch?v=${item.id}`,
       };
     })
     .filter((value): value is MusicTrack => value !== null);

@@ -10,6 +10,7 @@ type ApplePayload = {
           name?: string;
           artistName?: string;
           previews?: Array<{ url?: string }>;
+          url?: string;
         };
       }>;
     };
@@ -28,6 +29,11 @@ export async function searchAppleMusic(query: string, limit = 10): Promise<Music
 
   const payload = (await fetchJsonWithTimeout(url, {
     headers: { authorization: `Bearer ${developerToken}` },
+  }, {
+    context: {
+      provider: "apple-music",
+      query,
+    },
   })) as ApplePayload | null;
 
   const items = payload?.results?.songs?.data ?? [];
@@ -42,6 +48,7 @@ export async function searchAppleMusic(query: string, limit = 10): Promise<Music
         title,
         artist,
         previewUrl: item.attributes?.previews?.[0]?.url ?? null,
+        sourceUrl: item.attributes?.url ?? `https://music.apple.com/song/${item.id}`,
       };
     })
     .filter((value): value is MusicTrack => value !== null);

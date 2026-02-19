@@ -1,9 +1,9 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
-test("host can create room and reach lobby", async ({ page }) => {
+test("player can create room and reach live play screen", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Tunaris" })).toBeVisible();
-  await page.getByRole("button", { name: "Créer une room" }).click();
-  await expect(page.getByText(/Room créée/)).toBeVisible();
-  await expect(page.getByText(/[A-Z2-9]{6}/)).toBeVisible();
+
+  await page.getByRole("button", { name: "Créer et jouer" }).click();
+  await expect(page).toHaveURL(/\/room\/[A-Z2-9]{6}\/play/);
+  await expect(page.getByRole("button", { name: /Démarrer le blindtest/i })).toBeVisible();
 });
