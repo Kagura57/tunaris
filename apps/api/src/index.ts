@@ -39,6 +39,9 @@ function buildHealthDetailsPayload() {
   const hasYouTubeInvidiousInstances =
     typeof readEnvVar("YOUTUBE_INVIDIOUS_INSTANCES") === "string" &&
     (readEnvVar("YOUTUBE_INVIDIOUS_INSTANCES")?.length ?? 0) > 0;
+  const hasYTMusicSearchUrl =
+    typeof readEnvVar("YTMUSIC_SEARCH_URL") === "string" &&
+    (readEnvVar("YTMUSIC_SEARCH_URL")?.trim().length ?? 0) > 0;
 
   return {
     ok: true as const,
@@ -54,6 +57,7 @@ function buildHealthDetailsPayload() {
       hasYouTubeApiKey,
       hasYouTubeApiKeys,
       hasYouTubeInvidiousInstances,
+      hasYTMusicSearchUrl,
       hasAniListAccessToken:
         typeof readEnvVar("ANILIST_ACCESS_TOKEN") === "string" &&
         (readEnvVar("ANILIST_ACCESS_TOKEN")?.length ?? 0) > 0,

@@ -278,42 +278,81 @@ async function searchPlayableYouTube(query: string, limit: number): Promise<Musi
   return dedupeTracks(youtube, safeLimit);
 }
 
-async function resolveYouTubePlayback(track: MusicTrack) {
+type YouTubePlaybackResolution = {
+  track: MusicTrack | null;
+  attemptedQueries: number;
+  failedQueries: number;
+  emptyResultQueries: number;
+  fromCache: boolean;
+  alreadyYouTube: boolean;
+  selectedQuery: string | null;
+  lastError: string | null;
+};
+
+async function resolveYouTubePlayback(track: MusicTrack): Promise<YouTubePlaybackResolution> {
   if (isYouTubeLikeTrack(track)) {
     return {
-      ...track,
-      provider: "youtube",
-      sourceUrl: track.sourceUrl ?? `https://www.youtube.com/watch?v=${track.id}`,
-      previewUrl: null,
-    } satisfies MusicTrack;
+      track: {
+        ...track,
+        provider: "youtube",
+        sourceUrl: track.sourceUrl ?? `https://www.youtube.com/watch?v=${track.id}`,
+        previewUrl: null,
+      } satisfies MusicTrack,
+      attemptedQueries: 0,
+      failedQueries: 0,
+      emptyResultQueries: 0,
+      fromCache: false,
+      alreadyYouTube: true,
+      selectedQuery: null,
+      lastError: null,
+    };
   }
 
   const key = signature(track);
   const cached = youtubeTrackCache.get(key);
   if (cached) {
     if (cached.expiresAt > Date.now()) {
-      return cached.track;
+      return {
+        track: cached.track,
+        attemptedQueries: 0,
+        failedQueries: 0,
+        emptyResultQueries: 0,
+        fromCache: true,
+        alreadyYouTube: false,
+        selectedQuery: null,
+        lastError: null,
+      };
     }
     youtubeTrackCache.delete(key);
   }
 
   const queryVariants = buildYouTubeQueryVariants(track);
+  let attemptedQueries = 0;
+  let failedQueries = 0;
+  let emptyResultQueries = 0;
+  let lastError: string | null = null;
   for (const searchQuery of queryVariants) {
+    attemptedQueries += 1;
     let candidates: MusicTrack[] = [];
     try {
       candidates = await searchPlayableYouTube(searchQuery, 5);
     } catch (error) {
+      failedQueries += 1;
+      lastError = error instanceof Error ? error.message : "UNKNOWN_ERROR";
       logEvent("warn", "track_source_youtube_query_failed", {
         query: searchQuery,
         title: track.title,
         artist: track.artist,
-        error: error instanceof Error ? error.message : "UNKNOWN_ERROR",
+        error: lastError,
       });
       continue;
     }
 
     const selected = candidates[0] ?? null;
-    if (!selected) continue;
+    if (!selected) {
+      emptyResultQueries += 1;
+      continue;
+    }
 
     const resolved = {
       provider: "youtube" as const,
@@ -329,10 +368,28 @@ async function resolveYouTubePlayback(track: MusicTrack) {
       track: resolved,
       expiresAt: Date.now() + YOUTUBE_TRACK_CACHE_TTL_MS,
     });
-    return resolved;
+    return {
+      track: resolved,
+      attemptedQueries,
+      failedQueries,
+      emptyResultQueries,
+      fromCache: false,
+      alreadyYouTube: false,
+      selectedQuery: searchQuery,
+      lastError,
+    };
   }
 
-  return null;
+  return {
+    track: null,
+    attemptedQueries,
+    failedQueries,
+    emptyResultQueries,
+    fromCache: false,
+    alreadyYouTube: false,
+    selectedQuery: null,
+    lastError,
+  };
 }
 
 async function prioritizeYouTubePlayback(
@@ -347,6 +404,16 @@ async function prioritizeYouTubePlayback(
   let youtubeResolved = 0;
   let queryResolved = 0;
   let directResolveAttempts = 0;
+  let directResolveNoMatch = 0;
+  let directResolveFromCache = 0;
+  let directResolveAlreadyYouTube = 0;
+  let directResolveSearchQueryAttempts = 0;
+  let directResolveSearchFailures = 0;
+  let directResolveSearchEmptyResults = 0;
+  const directResolveErrorSamples = new Set<string>();
+  let queryFillAttempts = 0;
+  let queryFillFailures = 0;
+  let queryFillCandidateCount = 0;
 
   const remaining = Math.max(0, safeSize - result.length);
   const computedBudget = Math.min(
@@ -374,9 +441,9 @@ async function prioritizeYouTubePlayback(
         seen.add(key);
 
         directResolveAttempts += 1;
-        let youtubePlayback: MusicTrack | null = null;
+        let resolution: YouTubePlaybackResolution | null = null;
         try {
-          youtubePlayback = await resolveYouTubePlayback(track);
+          resolution = await resolveYouTubePlayback(track);
         } catch (error) {
           logEvent("warn", "track_source_direct_resolve_failed", {
             title: track.title,
@@ -385,14 +452,31 @@ async function prioritizeYouTubePlayback(
           });
           continue;
         }
-        if (youtubePlayback) {
+
+        if (!resolution) continue;
+
+        directResolveSearchQueryAttempts += resolution.attemptedQueries;
+        directResolveSearchFailures += resolution.failedQueries;
+        directResolveSearchEmptyResults += resolution.emptyResultQueries;
+        if (resolution.fromCache) directResolveFromCache += 1;
+        if (resolution.alreadyYouTube) directResolveAlreadyYouTube += 1;
+        if (resolution.lastError && directResolveErrorSamples.size < 5) {
+          directResolveErrorSamples.add(resolution.lastError);
+        }
+
+        if (resolution.track) {
           youtubeResolved += 1;
-          result.push(youtubePlayback);
+          result.push(resolution.track);
         } else {
+          directResolveNoMatch += 1;
           logEvent("debug", "track_source_youtube_track_skipped", {
             title: track.title,
             artist: track.artist,
             reason: "NO_YOUTUBE_MATCH",
+            attemptedQueries: resolution.attemptedQueries,
+            failedQueries: resolution.failedQueries,
+            emptyResultQueries: resolution.emptyResultQueries,
+            lastError: resolution.lastError,
           });
         }
       }
@@ -409,16 +493,19 @@ async function prioritizeYouTubePlayback(
     );
     for (const query of fillQueries) {
       if (result.length >= safeSize) break;
+      queryFillAttempts += 1;
       let candidates: MusicTrack[] = [];
       try {
         candidates = await searchPlayableYouTube(query, Math.min(10, safeSize));
       } catch (error) {
+        queryFillFailures += 1;
         logEvent("warn", "track_source_query_fill_failed", {
           query,
           error: error instanceof Error ? error.message : "UNKNOWN_ERROR",
         });
         continue;
       }
+      queryFillCandidateCount += candidates.length;
       for (const track of candidates) {
         if (result.length >= safeSize) break;
         if (isLikelyAdTrack(track)) continue;
@@ -438,11 +525,52 @@ async function prioritizeYouTubePlayback(
     youtubeResolved,
     queryResolved,
     directResolveAttempts,
+    directResolveNoMatch,
+    directResolveFromCache,
+    directResolveAlreadyYouTube,
+    directResolveSearchQueryAttempts,
+    directResolveSearchFailures,
+    directResolveSearchEmptyResults,
+    directResolveErrorSamples: [...directResolveErrorSamples],
+    queryFillAttempts,
+    queryFillFailures,
+    queryFillCandidateCount,
     resolveBudget,
     droppedNonYoutubeCount: Math.max(0, tracks.length - youtubeResolved),
   });
 
+  if (result.length <= 0) {
+    logEvent("warn", "track_source_youtube_priority_empty", {
+      requestedSize: safeSize,
+      inputCount: tracks.length,
+      directResolveAttempts,
+      directResolveNoMatch,
+      directResolveFromCache,
+      directResolveAlreadyYouTube,
+      directResolveSearchQueryAttempts,
+      directResolveSearchFailures,
+      directResolveSearchEmptyResults,
+      directResolveErrorSamples: [...directResolveErrorSamples],
+      queryFillAttempts,
+      queryFillFailures,
+      queryFillCandidateCount,
+      fillQuery: input.fillQuery,
+    });
+  }
+
   return result.slice(0, safeSize);
+}
+
+export async function resolveTracksToPlayableYouTube(
+  tracks: MusicTrack[],
+  size: number,
+  fillQuery = "",
+) {
+  return prioritizeYouTubePlayback(tracks, size, {
+    fillQuery,
+    allowQueryFill: fillQuery.trim().length > 0,
+    maxResolveBudget: tracks.length,
+  });
 }
 
 function fillQueryForParsedSource(parsed: ParsedTrackSource) {
@@ -451,13 +579,13 @@ function fillQueryForParsedSource(parsed: ParsedTrackSource) {
 }
 
 function sourceFetchLimit(size: number) {
-  return Math.min(60, Math.max(16, size * 2));
+  return Math.min(120, Math.max(24, size * 2));
 }
 
 export async function resolveTrackPoolFromSource(
   options: ResolveTrackPoolOptions,
 ): Promise<MusicTrack[]> {
-  const safeSize = Math.max(1, Math.min(options.size, 50));
+  const safeSize = Math.max(1, Math.min(options.size, 100));
   const parsed = parseTrackSource(options.categoryQuery);
 
   try {

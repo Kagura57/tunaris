@@ -1,5 +1,6 @@
 import { Elysia } from "elysia";
 import { readSessionFromHeaders } from "../auth/client";
+import { musicAccountRepository } from "../repositories/MusicAccountRepository";
 import { matchRepository } from "../repositories/MatchRepository";
 import { profileRepository } from "../repositories/ProfileRepository";
 import { roomStore } from "../services/RoomStore";
@@ -30,6 +31,14 @@ function readOptionalBooleanField(body: unknown, key: string) {
   return null;
 }
 
+function readOptionalNumberField(body: unknown, key: string) {
+  if (typeof body !== "object" || body === null) return null;
+  const record = body as Record<string, unknown>;
+  const value = record[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return null;
+}
+
 export const quizRoutes = new Elysia({ prefix: "/quiz" })
   .post("/create", ({ body }) => {
     const categoryQuery = readOptionalStringField(body, "categoryQuery");
@@ -54,7 +63,20 @@ export const quizRoutes = new Elysia({ prefix: "/quiz" })
     }
 
     const authContext = await readSessionFromHeaders(headers as unknown as Headers);
-    const joined = roomStore.joinRoomAsUser(roomCode, displayName, authContext?.user.id ?? null);
+    const linkedProviders = authContext?.user.id
+      ? await musicAccountRepository.listLinkStatuses(authContext.user.id)
+      : undefined;
+    const joined = roomStore.joinRoomAsUser(
+      roomCode,
+      displayName,
+      authContext?.user.id ?? null,
+      linkedProviders
+        ? {
+            spotify: { status: linkedProviders.spotify.status, estimatedTrackCount: null },
+            deezer: { status: linkedProviders.deezer.status, estimatedTrackCount: null },
+          }
+        : undefined,
+    );
     if ("status" in joined && joined.status === "room_not_found") {
       set.status = 404;
       return { ok: false, error: "ROOM_NOT_FOUND" };
@@ -96,6 +118,8 @@ export const quizRoutes = new Elysia({ prefix: "/quiz" })
         set.status = 429;
       } else if (started.error === "NO_TRACKS_FOUND") {
         set.status = 422;
+      } else if (started.error === "PLAYERS_LIBRARY_NOT_READY" || started.error === "PLAYERS_LIBRARY_SYNCING") {
+        set.status = 409;
       } else if (started.error === "PLAYER_NOT_FOUND") {
         set.status = 404;
       } else if (started.error === "HOST_ONLY") {
@@ -139,6 +163,160 @@ export const quizRoutes = new Elysia({ prefix: "/quiz" })
       return { ok: false, error: "INVALID_PAYLOAD" };
     }
     return { ok: true as const, categoryQuery: result.categoryQuery };
+  })
+  .post("/source/mode", ({ body, set }) => {
+    const roomCode = readStringField(body, "roomCode");
+    const playerId = readStringField(body, "playerId");
+    const mode = readStringField(body, "mode");
+    if (!roomCode || !playerId || !mode) {
+      set.status = 400;
+      return { ok: false, error: "INVALID_PAYLOAD" };
+    }
+    if (mode !== "public_playlist" && mode !== "players_liked") {
+      set.status = 400;
+      return { ok: false, error: "INVALID_MODE" };
+    }
+    const result = roomStore.setRoomSourceMode(roomCode, playerId, mode);
+    if (result.status === "room_not_found") {
+      set.status = 404;
+      return { ok: false, error: "ROOM_NOT_FOUND" };
+    }
+    if (result.status === "player_not_found") {
+      set.status = 404;
+      return { ok: false, error: "PLAYER_NOT_FOUND" };
+    }
+    if (result.status === "forbidden") {
+      set.status = 403;
+      return { ok: false, error: "HOST_ONLY" };
+    }
+    if (result.status === "invalid_state") {
+      set.status = 409;
+      return { ok: false, error: "INVALID_STATE" };
+    }
+    return { ok: true as const, mode: result.mode };
+  })
+  .post("/source/public-playlist", ({ body, set }) => {
+    const roomCode = readStringField(body, "roomCode");
+    const playerId = readStringField(body, "playerId");
+    const id = readStringField(body, "id");
+    const name = readOptionalStringField(body, "name") ?? "";
+    const sourceQuery = readOptionalStringField(body, "sourceQuery") ?? undefined;
+    const trackCount = readOptionalNumberField(body, "trackCount");
+    if (!roomCode || !playerId || !id) {
+      set.status = 400;
+      return { ok: false, error: "INVALID_PAYLOAD" };
+    }
+    const result = roomStore.setRoomPublicPlaylist(roomCode, playerId, {
+      id,
+      name,
+      sourceQuery,
+      trackCount: trackCount ?? null,
+    });
+    if (result.status === "room_not_found") {
+      set.status = 404;
+      return { ok: false, error: "ROOM_NOT_FOUND" };
+    }
+    if (result.status === "player_not_found") {
+      set.status = 404;
+      return { ok: false, error: "PLAYER_NOT_FOUND" };
+    }
+    if (result.status === "forbidden") {
+      set.status = 403;
+      return { ok: false, error: "HOST_ONLY" };
+    }
+    if (result.status === "invalid_state") {
+      set.status = 409;
+      return { ok: false, error: "INVALID_STATE" };
+    }
+    if (result.status === "invalid_payload") {
+      set.status = 400;
+      return { ok: false, error: "INVALID_PAYLOAD" };
+    }
+    return {
+      ok: true as const,
+      sourceMode: result.sourceMode,
+      categoryQuery: result.categoryQuery,
+    };
+  })
+  .post("/library/contribution", async ({ body, headers, set }) => {
+    const roomCode = readStringField(body, "roomCode");
+    const playerId = readStringField(body, "playerId");
+    const provider = readStringField(body, "provider");
+    const includeInPool = readOptionalBooleanField(body, "includeInPool");
+    if (!roomCode || !playerId || !provider || includeInPool === null) {
+      set.status = 400;
+      return { ok: false, error: "INVALID_PAYLOAD" };
+    }
+    if (provider !== "spotify" && provider !== "deezer") {
+      set.status = 400;
+      return { ok: false, error: "INVALID_PROVIDER" };
+    }
+    const authContext = await readSessionFromHeaders(headers as unknown as Headers);
+    if (!authContext?.user?.id) {
+      set.status = 401;
+      return { ok: false, error: "UNAUTHORIZED" };
+    }
+    const ownerUserId = roomStore.playerUserId(roomCode, playerId);
+    if (!ownerUserId || ownerUserId !== authContext.user.id) {
+      set.status = 403;
+      return { ok: false, error: "FORBIDDEN" };
+    }
+    const result = roomStore.setPlayerLibraryContribution(roomCode, playerId, provider, includeInPool);
+    if (result.status === "room_not_found") {
+      set.status = 404;
+      return { ok: false, error: "ROOM_NOT_FOUND" };
+    }
+    if (result.status === "player_not_found") {
+      set.status = 404;
+      return { ok: false, error: "PLAYER_NOT_FOUND" };
+    }
+    if (result.status === "invalid_state") {
+      set.status = 409;
+      return { ok: false, error: "INVALID_STATE" };
+    }
+    if (result.status === "forbidden") {
+      set.status = 403;
+      return { ok: false, error: "FORBIDDEN" };
+    }
+    return {
+      ok: true as const,
+      includeInPool: result.includeInPool,
+    };
+  })
+  .post("/library/refresh-links", async ({ body, headers, set }) => {
+    const roomCode = readStringField(body, "roomCode");
+    const playerId = readStringField(body, "playerId");
+    if (!roomCode || !playerId) {
+      set.status = 400;
+      return { ok: false, error: "INVALID_PAYLOAD" };
+    }
+    const authContext = await readSessionFromHeaders(headers as unknown as Headers);
+    if (!authContext?.user?.id) {
+      set.status = 401;
+      return { ok: false, error: "UNAUTHORIZED" };
+    }
+    const ownerUserId = roomStore.playerUserId(roomCode, playerId);
+    if (!ownerUserId || ownerUserId !== authContext.user.id) {
+      set.status = 403;
+      return { ok: false, error: "FORBIDDEN" };
+    }
+    const links = await musicAccountRepository.listLinkStatuses(authContext.user.id);
+    const synced = roomStore.setPlayerLibraryLinks(roomCode, playerId, {
+      spotify: { status: links.spotify.status, estimatedTrackCount: null },
+      deezer: { status: links.deezer.status, estimatedTrackCount: null },
+    });
+    if (synced.status === "room_not_found") {
+      set.status = 404;
+      return { ok: false, error: "ROOM_NOT_FOUND" };
+    }
+    if (synced.status === "player_not_found") {
+      set.status = 404;
+      return { ok: false, error: "PLAYER_NOT_FOUND" };
+    }
+    return {
+      ok: true as const,
+      linkedProviders: synced.linkedProviders,
+    };
   })
   .post("/ready", ({ body, set }) => {
     const roomCode = readStringField(body, "roomCode");

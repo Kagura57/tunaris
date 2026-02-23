@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { createRoom, getPublicRooms, joinRoom } from "../lib/api";
@@ -7,6 +7,7 @@ import { useGameStore } from "../stores/gameStore";
 export function HomePage() {
   const navigate = useNavigate();
   const setSession = useGameStore((state) => state.setSession);
+  const account = useGameStore((state) => state.account);
   const [createDisplayName, setCreateDisplayName] = useState("Player One");
   const [joinDisplayName, setJoinDisplayName] = useState("Player One");
   const [joinRoomCode, setJoinRoomCode] = useState("");
@@ -72,6 +73,13 @@ export function HomePage() {
   });
   const joinErrorCode = joinMutation.error instanceof Error ? joinMutation.error.message : null;
 
+  useEffect(() => {
+    const suggestedName = account.name?.trim() ?? "";
+    if (!suggestedName) return;
+    setCreateDisplayName((current) => (current === "Player One" ? suggestedName : current));
+    setJoinDisplayName((current) => (current === "Player One" ? suggestedName : current));
+  }, [account.name]);
+
   function onCreate() {
     createRoomMutation.mutate();
   }
@@ -87,6 +95,11 @@ export function HomePage() {
       <article className="panel-card">
         <h2 className="panel-title">Créer une room</h2>
         <p className="panel-copy">Crée un lobby en un clic, choisis la visibilité, puis lance la partie.</p>
+        {!account.userId && (
+          <p className="status">
+            Astuce: connecte-toi pour lier Spotify/Deezer et activer le mode Liked Songs.
+          </p>
+        )}
 
         <div className="panel-form">
           <label>

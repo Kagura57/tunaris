@@ -35,6 +35,7 @@ function apiBaseCandidates() {
 
 type ApiErrorPayload = {
   error?: unknown;
+  message?: unknown;
   retryAfterMs?: unknown;
 };
 
@@ -62,12 +63,52 @@ export type RoomState = {
     displayName: string;
     isReady: boolean;
     isHost: boolean;
+    canContributeLibrary: boolean;
+    libraryContribution: {
+      includeInPool: {
+        spotify: boolean;
+        deezer: boolean;
+      };
+      linkedProviders: {
+        spotify: "linked" | "not_linked" | "expired";
+        deezer: "linked" | "not_linked" | "expired";
+      };
+      estimatedTrackCount: {
+        spotify: number | null;
+        deezer: number | null;
+      };
+      syncStatus: "idle" | "syncing" | "ready" | "error";
+      lastError: string | null;
+    };
   }>;
   readyCount: number;
   allReady: boolean;
   canStart: boolean;
   poolSize: number;
   categoryQuery: string;
+  sourceMode: "public_playlist" | "players_liked";
+  sourceConfig: {
+    mode: "public_playlist" | "players_liked";
+    publicPlaylist: {
+      provider: "deezer";
+      id: string;
+      name: string;
+      trackCount: number | null;
+      sourceQuery: string;
+      selectedByPlayerId: string;
+    } | null;
+    playersLikedRules: {
+      minContributors: number;
+      minTotalTracks: number;
+    };
+  };
+  poolBuild: {
+    status: "idle" | "building" | "ready" | "failed";
+    contributorsCount: number;
+    playableTracksCount: number;
+    lastBuiltAtMs: number | null;
+    errorCode: string | null;
+  };
   totalRounds: number;
   deadlineMs: number | null;
   previewUrl: string | null;
@@ -135,24 +176,8 @@ export type PublicRoomSummary = {
   serverNowMs: number;
 };
 
-export type SpotifyPlaylistCategory = {
-  id: string;
-  label: string;
-  query: string;
-};
-
-export type SpotifyPlaylistOption = {
-  id: string;
-  name: string;
-  description: string;
-  imageUrl: string | null;
-  externalUrl: string;
-  owner: string | null;
-  trackCount: number | null;
-};
-
 export type UnifiedPlaylistOption = {
-  provider: "spotify" | "deezer";
+  provider: "deezer";
   id: string;
   name: string;
   description: string;
@@ -243,6 +268,8 @@ async function requestJson<T>(path: string, init?: RequestOptions): Promise<T> {
           const payload = (await response.json()) as ApiErrorPayload;
           if (typeof payload.error === "string" && payload.error.length > 0) {
             details = payload.error;
+          } else if (typeof payload.message === "string" && payload.message.length > 0) {
+            details = payload.message;
           }
           if (typeof payload.retryAfterMs === "number" && Number.isFinite(payload.retryAfterMs)) {
             retryAfterMs = Math.max(0, Math.round(payload.retryAfterMs));
@@ -357,6 +384,7 @@ export async function startRoom(input: { roomCode: string; playerId: string }) {
     state: string;
     poolSize: number;
     categoryQuery: string;
+    sourceMode?: "public_playlist" | "players_liked";
     totalRounds: number;
     deadlineMs: number | null;
   }>("/quiz/start", {
@@ -367,6 +395,66 @@ export async function startRoom(input: { roomCode: string; playerId: string }) {
 
 export async function setRoomSource(input: { roomCode: string; playerId: string; categoryQuery: string }) {
   return requestJson<{ ok: true; categoryQuery: string }>("/quiz/source", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function setRoomSourceMode(input: {
+  roomCode: string;
+  playerId: string;
+  mode: "public_playlist" | "players_liked";
+}) {
+  return requestJson<{ ok: true; mode: "public_playlist" | "players_liked" }>("/quiz/source/mode", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function setRoomPublicPlaylist(input: {
+  roomCode: string;
+  playerId: string;
+  id: string;
+  name: string;
+  trackCount: number | null;
+  sourceQuery: string;
+}) {
+  return requestJson<{
+    ok: true;
+    sourceMode: "public_playlist" | "players_liked";
+    categoryQuery: string;
+  }>("/quiz/source/public-playlist", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function setPlayerLibraryContribution(input: {
+  roomCode: string;
+  playerId: string;
+  provider: "spotify" | "deezer";
+  includeInPool: boolean;
+}) {
+  return requestJson<{
+    ok: true;
+    includeInPool: boolean;
+  }>("/quiz/library/contribution", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function refreshPlayerLibraryLinks(input: {
+  roomCode: string;
+  playerId: string;
+}) {
+  return requestJson<{
+    ok: true;
+    linkedProviders: {
+      spotify: "linked" | "not_linked" | "expired";
+      deezer: "linked" | "not_linked" | "expired";
+    };
+  }>("/quiz/library/refresh-links", {
     method: "POST",
     body: JSON.stringify(input),
   });
@@ -441,6 +529,68 @@ export async function getRoomResults(roomCode: string) {
   return requestJson<RoomResults>(`/quiz/results/${encodeURIComponent(roomCode)}`);
 }
 
+export async function getAuthSession() {
+  return requestJson<{
+    session: {
+      id: string;
+      userId: string;
+      expiresAt: string;
+      createdAt: string;
+      updatedAt: string;
+    };
+    user: {
+      id: string;
+      name: string;
+      email: string;
+    };
+  } | null>("/auth/get-session");
+}
+
+export async function signUpWithEmail(input: {
+  name: string;
+  email: string;
+  password: string;
+  rememberMe?: boolean;
+}) {
+  return requestJson<{
+    token: string | null;
+    user: {
+      id: string;
+      name: string;
+      email: string;
+    };
+  }>("/auth/sign-up/email", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function signInWithEmail(input: {
+  email: string;
+  password: string;
+  rememberMe?: boolean;
+}) {
+  return requestJson<{
+    redirect: boolean;
+    token: string;
+    url: string | null;
+    user: {
+      id: string;
+      name: string;
+      email: string;
+    };
+  }>("/auth/sign-in/email", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function signOutAccount() {
+  return requestJson<{ success: boolean }>("/auth/sign-out", {
+    method: "POST",
+  });
+}
+
 export async function getAccountMe() {
   return requestJson<{
     ok: true;
@@ -467,27 +617,82 @@ export async function getAccountHistory() {
   }>("/account/history");
 }
 
-export async function getSpotifyPlaylistCategories() {
+export async function getMusicProviderLinks() {
   return requestJson<{
     ok: true;
-    categories: SpotifyPlaylistCategory[];
-  }>("/music/spotify/categories");
+    providers: {
+      spotify: { status: "linked" | "not_linked" | "expired" };
+      deezer: { status: "linked" | "not_linked" | "expired" };
+    };
+  }>("/account/music/providers");
 }
 
-export async function getSpotifyPlaylists(input?: { category?: string; q?: string; limit?: number }) {
+export async function getMusicProviderConnectUrl(input: {
+  provider: "spotify" | "deezer";
+  returnTo?: string;
+}) {
   const params = new URLSearchParams();
-  if (input?.category) params.set("category", input.category);
-  if (input?.q) params.set("q", input.q);
-  if (typeof input?.limit === "number") params.set("limit", String(input.limit));
+  if (input.returnTo && input.returnTo.trim().length > 0) {
+    params.set("returnTo", input.returnTo.trim());
+  }
   const query = params.toString();
-  const path = query.length > 0 ? `/music/spotify/playlists?${query}` : "/music/spotify/playlists";
   return requestJson<{
     ok: true;
-    source: "popular" | "category" | "search";
-    category?: string;
-    search?: string;
-    playlists: SpotifyPlaylistOption[];
-  }>(path);
+    provider: "spotify" | "deezer";
+    authorizeUrl: string;
+  }>(`/account/music/${input.provider}/connect/start${query.length > 0 ? `?${query}` : ""}`);
+}
+
+export async function disconnectMusicProvider(input: { provider: "spotify" | "deezer" }) {
+  return requestJson<{
+    ok: true;
+    providers: {
+      spotify: { status: "linked" | "not_linked" | "expired" };
+      deezer: { status: "linked" | "not_linked" | "expired" };
+    };
+  }>(`/account/music/${input.provider}/disconnect`, {
+    method: "POST",
+  });
+}
+
+export async function getMyLikedTracks(input: { provider: "spotify" | "deezer"; limit?: number }) {
+  const params = new URLSearchParams();
+  if (typeof input.limit === "number") params.set("limit", String(input.limit));
+  const query = params.toString();
+  return requestJson<{
+    ok: true;
+    provider: "spotify" | "deezer";
+    total: number | null;
+    tracks: Array<{
+      provider: "spotify" | "deezer" | "youtube";
+      id: string;
+      title: string;
+      artist: string;
+      previewUrl: string | null;
+      sourceUrl: string | null;
+    }>;
+  }>(`/account/music/${input.provider}/liked${query.length > 0 ? `?${query}` : ""}`);
+}
+
+export async function getMyPlaylists(input: { provider: "spotify" | "deezer"; limit?: number }) {
+  const params = new URLSearchParams();
+  if (typeof input.limit === "number") params.set("limit", String(input.limit));
+  const query = params.toString();
+  return requestJson<{
+    ok: true;
+    provider: "spotify" | "deezer";
+    playlists: Array<{
+      provider: "spotify" | "deezer";
+      id: string;
+      name: string;
+      description: string;
+      imageUrl: string | null;
+      externalUrl: string;
+      owner: string | null;
+      trackCount: number | null;
+      sourceQuery: string;
+    }>;
+  }>(`/account/music/${input.provider}/playlists${query.length > 0 ? `?${query}` : ""}`);
 }
 
 export async function searchPlaylistsAcrossProviders(input: { q: string; limit?: number }) {

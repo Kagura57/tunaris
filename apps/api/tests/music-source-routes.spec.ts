@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { app } from "../src/index";
-import * as spotifyModule from "../src/routes/music/spotify";
 import * as deezerModule from "../src/routes/music/deezer";
 
 afterEach(() => {
@@ -8,31 +7,6 @@ afterEach(() => {
 });
 
 describe("music source routes", () => {
-  it("returns spotify category presets", async () => {
-    const response = await app.handle(new Request("http://localhost/music/spotify/categories"));
-    expect(response.status).toBe(200);
-    const payload = (await response.json()) as {
-      ok: boolean;
-      categories: Array<{ id: string; label: string; query: string }>;
-    };
-    expect(payload.ok).toBe(true);
-    expect(payload.categories.length).toBeGreaterThan(0);
-  });
-
-  it("returns spotify playlists collection payload", async () => {
-    const response = await app.handle(
-      new Request("http://localhost/music/spotify/playlists?category=pop&limit=6"),
-    );
-    expect(response.status).toBe(200);
-    const payload = (await response.json()) as {
-      ok: boolean;
-      playlists: Array<{ id: string; name: string }>;
-    };
-    expect(payload.ok).toBe(true);
-    expect(payload.playlists.length).toBeGreaterThanOrEqual(0);
-    expect(payload.playlists.length).toBeLessThanOrEqual(6);
-  });
-
   it("returns 400 when source is missing", async () => {
     const response = await app.handle(new Request("http://localhost/music/source/resolve"));
     expect(response.status).toBe(400);
@@ -59,18 +33,7 @@ describe("music source routes", () => {
     expect(response.status).toBe(400);
   });
 
-  it("returns merged playlist results in unified format", async () => {
-    vi.spyOn(spotifyModule, "searchSpotifyPlaylists").mockResolvedValue([
-      {
-        id: "sp123",
-        name: "Top Spotify",
-        description: "desc",
-        imageUrl: "https://cdn.example/sp.jpg",
-        externalUrl: "https://open.spotify.com/playlist/sp123",
-        owner: "Spotify",
-        trackCount: 120,
-      },
-    ]);
+  it("returns Deezer-only playlist results in unified format", async () => {
     vi.spyOn(deezerModule, "searchDeezerPlaylists").mockResolvedValue([
       {
         provider: "deezer",
@@ -91,7 +54,7 @@ describe("music source routes", () => {
     const payload = (await response.json()) as {
       ok: boolean;
       playlists: Array<{
-        provider: "spotify" | "deezer";
+        provider: "deezer";
         id: string;
         name: string;
         trackCount: number | null;
@@ -99,14 +62,8 @@ describe("music source routes", () => {
       }>;
     };
     expect(payload.ok).toBe(true);
-    expect(payload.playlists.length).toBe(2);
+    expect(payload.playlists.length).toBe(1);
     expect(payload.playlists[0]).toMatchObject({
-      provider: "spotify",
-      id: "sp123",
-      trackCount: 120,
-      sourceQuery: "spotify:playlist:sp123",
-    });
-    expect(payload.playlists[1]).toMatchObject({
       provider: "deezer",
       id: "dz123",
       trackCount: 80,
@@ -114,20 +71,8 @@ describe("music source routes", () => {
     });
   });
 
-  it("keeps returning results when one provider fails", async () => {
-    vi.spyOn(spotifyModule, "searchSpotifyPlaylists").mockRejectedValue(new Error("SPOTIFY_MAP_BROKEN"));
-    vi.spyOn(deezerModule, "searchDeezerPlaylists").mockResolvedValue([
-      {
-        provider: "deezer",
-        id: "dz-ok",
-        name: "Deezer OK",
-        description: "",
-        imageUrl: null,
-        externalUrl: "https://www.deezer.com/playlist/dz-ok",
-        owner: "Deezer",
-        trackCount: 42,
-      },
-    ]);
+  it("returns empty results when Deezer fails", async () => {
+    vi.spyOn(deezerModule, "searchDeezerPlaylists").mockRejectedValue(new Error("DEEZER_BROKEN"));
 
     const response = await app.handle(
       new Request("http://localhost/music/playlists/search?q=ok%20search&limit=24"),
@@ -135,47 +80,23 @@ describe("music source routes", () => {
     expect(response.status).toBe(200);
     const payload = (await response.json()) as {
       ok: boolean;
-      playlists: Array<{ provider: "spotify" | "deezer"; id: string }>;
+      playlists: Array<{ provider: "deezer"; id: string }>;
     };
     expect(payload.ok).toBe(true);
-    expect(payload.playlists).toEqual([
-      {
-        provider: "deezer",
-        id: "dz-ok",
-        name: "Deezer OK",
-        description: "",
-        imageUrl: null,
-        externalUrl: "https://www.deezer.com/playlist/dz-ok",
-        owner: "Deezer",
-        trackCount: 42,
-        sourceQuery: "deezer:playlist:dz-ok",
-      },
-    ]);
+    expect(payload.playlists).toEqual([]);
   });
 
-  it("does not crash when a provider returns malformed items and still returns valid playlists", async () => {
-    vi.spyOn(spotifyModule, "searchSpotifyPlaylists").mockResolvedValue([
+  it("does not crash when Deezer returns malformed items and still returns valid playlists", async () => {
+    vi.spyOn(deezerModule, "searchDeezerPlaylists").mockResolvedValue([
       {
-        // malformed runtime shape: previous implementation crashed on id.trim()
         id: undefined,
-        name: "Broken Spotify Payload",
+        name: "Broken Deezer Payload",
         description: "broken",
         imageUrl: null,
-        externalUrl: "https://open.spotify.com/playlist/broken",
-        owner: "spotify",
+        externalUrl: "https://www.deezer.com/playlist/broken",
+        owner: "deezer",
         trackCount: null,
-      } as unknown as Awaited<ReturnType<typeof spotifyModule.searchSpotifyPlaylists>>[number],
-      {
-        id: "sp-valid",
-        name: "Spotify Valid",
-        description: "",
-        imageUrl: null,
-        externalUrl: "https://open.spotify.com/playlist/sp-valid",
-        owner: "Spotify",
-        trackCount: 77,
-      },
-    ]);
-    vi.spyOn(deezerModule, "searchDeezerPlaylists").mockResolvedValue([
+      } as unknown as Awaited<ReturnType<typeof deezerModule.searchDeezerPlaylists>>[number],
       {
         provider: "deezer",
         id: "dz-valid",
@@ -194,38 +115,23 @@ describe("music source routes", () => {
     expect(response.status).toBe(200);
     const payload = (await response.json()) as {
       ok: boolean;
-      playlists: Array<{ provider: "spotify" | "deezer"; id: string; name: string }>;
+      playlists: Array<{ provider: "deezer"; id: string; name: string }>;
     };
     expect(payload.ok).toBe(true);
-    expect(payload.playlists).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ provider: "spotify", id: "sp-valid", name: "Spotify Valid" }),
-        expect.objectContaining({ provider: "deezer", id: "dz-valid", name: "Deezer Valid" }),
-      ]),
-    );
-    expect(payload.playlists.some((item) => item.name === "Broken Spotify Payload")).toBe(false);
+    expect(payload.playlists).toEqual([
+      expect.objectContaining({ provider: "deezer", id: "dz-valid", name: "Deezer Valid" }),
+    ]);
+    expect(payload.playlists.some((item) => item.name === "Broken Deezer Payload")).toBe(false);
   });
 
-  it("returns partial results when one provider hangs beyond timeout", async () => {
+  it("returns quickly with empty list when Deezer hangs beyond timeout", async () => {
     const originalTimeout = process.env.PLAYLIST_SEARCH_PROVIDER_TIMEOUT_MS;
     process.env.PLAYLIST_SEARCH_PROVIDER_TIMEOUT_MS = "50";
 
     try {
-      vi.spyOn(spotifyModule, "searchSpotifyPlaylists").mockImplementation(
-        () => new Promise(() => {}) as ReturnType<typeof spotifyModule.searchSpotifyPlaylists>,
+      vi.spyOn(deezerModule, "searchDeezerPlaylists").mockImplementation(
+        () => new Promise(() => {}) as ReturnType<typeof deezerModule.searchDeezerPlaylists>,
       );
-      vi.spyOn(deezerModule, "searchDeezerPlaylists").mockResolvedValue([
-        {
-          provider: "deezer",
-          id: "dz-fast",
-          name: "Fast Deezer",
-          description: "",
-          imageUrl: null,
-          externalUrl: "https://www.deezer.com/playlist/dz-fast",
-          owner: "Deezer",
-          trackCount: 55,
-        },
-      ]);
 
       const startedAt = Date.now();
       const response = await app.handle(
@@ -236,16 +142,10 @@ describe("music source routes", () => {
       expect(response.status).toBe(200);
       const payload = (await response.json()) as {
         ok: boolean;
-        playlists: Array<{ provider: "spotify" | "deezer"; id: string; name: string }>;
+        playlists: Array<{ provider: "deezer"; id: string; name: string }>;
       };
       expect(payload.ok).toBe(true);
-      expect(payload.playlists).toEqual([
-        expect.objectContaining({
-          provider: "deezer",
-          id: "dz-fast",
-          name: "Fast Deezer",
-        }),
-      ]);
+      expect(payload.playlists).toEqual([]);
       expect(durationMs).toBeLessThan(1500);
     } finally {
       if (typeof originalTimeout === "string") {

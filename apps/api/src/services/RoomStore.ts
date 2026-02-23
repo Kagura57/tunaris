@@ -8,8 +8,21 @@ import { RoomManager } from "./RoomManager";
 import { trackCache } from "./TrackCache";
 import type { MusicTrack } from "./music-types";
 import { SPOTIFY_RATE_LIMITED_ERROR, spotifyPlaylistRateLimitRetryAfterMs } from "../routes/music/spotify";
+import { fetchUserLikedTracksForProviders } from "./UserMusicLibrary";
 
 type RoundMode = "mcq" | "text";
+type RoomSourceMode = "public_playlist" | "players_liked";
+type LibraryProvider = "spotify" | "deezer";
+type ProviderLinkStatus = "linked" | "not_linked" | "expired";
+type PoolBuildStatus = "idle" | "building" | "ready" | "failed";
+
+type PlayerLibraryState = {
+  includeInPool: Record<LibraryProvider, boolean>;
+  linkedProviders: Record<LibraryProvider, ProviderLinkStatus>;
+  estimatedTrackCount: Record<LibraryProvider, number | null>;
+  syncStatus: "idle" | "syncing" | "ready" | "error";
+  lastError: string | null;
+};
 
 type Player = {
   id: string;
@@ -22,6 +35,7 @@ type Player = {
   maxStreak: number;
   totalResponseMs: number;
   correctAnswers: number;
+  library: PlayerLibraryState;
 };
 
 type RoomSession = {
@@ -33,6 +47,28 @@ type RoomSession = {
   hostPlayerId: string | null;
   nextPlayerNumber: number;
   trackPool: MusicTrack[];
+  distractorTrackPool: MusicTrack[];
+  sourceMode: RoomSourceMode;
+  publicPlaylistSelection: {
+    provider: "deezer";
+    id: string;
+    name: string;
+    trackCount: number | null;
+    sourceQuery: string;
+    selectedByPlayerId: string;
+  } | null;
+  playersLikedRules: {
+    minContributors: number;
+    minTotalTracks: number;
+  };
+  playersLikedPool: MusicTrack[];
+  poolBuild: {
+    status: PoolBuildStatus;
+    contributorsCount: number;
+    playableTracksCount: number;
+    lastBuiltAtMs: number | null;
+    errorCode: string | null;
+  };
   categoryQuery: string;
   totalRounds: number;
   roundModes: RoundMode[];
@@ -62,11 +98,20 @@ const DEFAULT_ROUND_CONFIG = {
   maxRounds: 10,
 } as const;
 
+const TRACK_POOL_TARGET_MULTIPLIER = 5;
+const TRACK_POOL_MIN_CANDIDATES = 24;
+const TRACK_POOL_MAX_CANDIDATES = 100;
+
 type RoundConfig = typeof DEFAULT_ROUND_CONFIG;
 
 type RoomStoreDependencies = {
   now?: () => number;
   getTrackPool?: (categoryQuery: string, size: number) => Promise<MusicTrack[]>;
+  getPlayerLikedTracks?: (input: {
+    userId: string;
+    providers: LibraryProvider[];
+    size: number;
+  }) => Promise<MusicTrack[]>;
   config?: Partial<RoundConfig>;
 };
 
@@ -178,17 +223,49 @@ function trackSignature(track: Pick<MusicTrack, "provider" | "id" | "title" | "a
   return `${track.provider}:${track.id}:${track.title.toLowerCase()}:${track.artist.toLowerCase()}`;
 }
 
+function defaultPlayerLibraryState(): PlayerLibraryState {
+  return {
+    includeInPool: {
+      spotify: false,
+      deezer: false,
+    },
+    linkedProviders: {
+      spotify: "not_linked",
+      deezer: "not_linked",
+    },
+    estimatedTrackCount: {
+      spotify: null,
+      deezer: null,
+    },
+    syncStatus: "idle",
+    lastError: null,
+  };
+}
+
+function normalizeProviderLinkStatus(value: ProviderLinkStatus | null | undefined): ProviderLinkStatus {
+  if (value === "linked" || value === "expired") return value;
+  return "not_linked";
+}
+
 export class RoomStore {
   private readonly rooms = new Map<string, RoomSession>();
   private readonly roomPreloadJobs = new Map<string, Promise<void>>();
+  private readonly roomLikedPoolJobs = new Map<string, Promise<void>>();
+  private readonly roomLikedPoolRebuildRequested = new Set<string>();
   private readonly now: () => number;
   private readonly getTrackPool: (categoryQuery: string, size: number) => Promise<MusicTrack[]>;
+  private readonly getPlayerLikedTracks: (input: {
+    userId: string;
+    providers: LibraryProvider[];
+    size: number;
+  }) => Promise<MusicTrack[]>;
   private readonly config: RoundConfig;
 
   constructor(dependencies: RoomStoreDependencies = {}) {
     this.now = dependencies.now ?? (() => Date.now());
     this.getTrackPool = dependencies.getTrackPool ?? ((categoryQuery, size) =>
       trackCache.getOrBuild(categoryQuery, size));
+    this.getPlayerLikedTracks = dependencies.getPlayerLikedTracks ?? fetchUserLikedTracksForProviders;
     this.config = {
       ...DEFAULT_ROUND_CONFIG,
       ...(dependencies.config ?? {}),
@@ -212,6 +289,43 @@ export class RoomStore {
     for (const player of session.players.values()) {
       player.isReady = false;
     }
+  }
+
+  private sourceQueryForSession(session: RoomSession) {
+    if (session.sourceMode === "public_playlist") {
+      return session.publicPlaylistSelection?.sourceQuery?.trim() || session.categoryQuery.trim();
+    }
+    return "players:liked";
+  }
+
+  private playersLikedContributors(session: RoomSession) {
+    return [...session.players.values()].filter((player) => {
+      if (!player.userId) return false;
+      const spotifyIncluded =
+        player.library.includeInPool.spotify &&
+        player.library.linkedProviders.spotify === "linked";
+      const deezerIncluded =
+        player.library.includeInPool.deezer &&
+        player.library.linkedProviders.deezer === "linked";
+      return spotifyIncluded || deezerIncluded;
+    });
+  }
+
+  private canStartWaitingSession(session: RoomSession) {
+    if (session.manager.state() !== "waiting") return false;
+    const players = this.sortedPlayers(session);
+    const readyCount = players.filter((player) => player.isReady).length;
+    const allReady = players.length > 0 && readyCount === players.length;
+    if (!allReady) return false;
+
+    if (session.sourceMode === "public_playlist") {
+      return this.sourceQueryForSession(session).length > 0;
+    }
+
+    if (session.poolBuild.status !== "ready") return false;
+    if (session.poolBuild.playableTracksCount < session.playersLikedRules.minTotalTracks) return false;
+    const contributors = this.playersLikedContributors(session);
+    return contributors.length >= session.playersLikedRules.minContributors;
   }
 
   private ranking(session: RoomSession) {
@@ -249,6 +363,30 @@ export class RoomStore {
       }));
   }
 
+  private targetCandidatePoolSize(requestedRounds: number) {
+    const safeRounds = Math.max(1, requestedRounds);
+    return Math.min(
+      TRACK_POOL_MAX_CANDIDATES,
+      Math.max(
+        safeRounds + 3,
+        safeRounds * TRACK_POOL_TARGET_MULTIPLIER,
+        TRACK_POOL_MIN_CANDIDATES,
+      ),
+    );
+  }
+
+  private splitAnswerAndDistractorPools(tracks: MusicTrack[], requestedRounds: number) {
+    const safeRounds = Math.max(1, requestedRounds);
+    const shuffled = randomShuffle(tracks);
+    const answers = shuffled.slice(0, safeRounds);
+    const distractors = shuffled.slice(safeRounds);
+    return {
+      tracks: answers,
+      distractorTracks: distractors,
+      candidateCount: shuffled.length,
+    };
+  }
+
   private buildRoundChoices(session: RoomSession, round: number) {
     const existing = session.roundChoices.get(round);
     if (existing) return existing;
@@ -257,17 +395,10 @@ export class RoomStore {
     if (!track) return [];
 
     const correct = asChoiceLabel(track);
-    const previousCorrectAnswers = new Set(
-      session.trackPool
-        .slice(0, Math.max(0, round - 1))
-        .map(asChoiceLabel),
-    );
     const distractors = randomShuffle(
-      session.trackPool
-        .filter((candidate) => candidate.id !== track.id)
+      session.distractorTrackPool
         .map(asChoiceLabel)
         .filter((value) => value !== correct)
-        .filter((value) => !previousCorrectAnswers.has(value)),
     );
 
     const uniqueOptions = [correct];
@@ -295,11 +426,15 @@ export class RoomStore {
 
   private async buildStartTrackPool(categoryQuery: string, requestedRounds: number) {
     const safeRounds = Math.max(1, requestedRounds);
+    const targetCandidateSize = this.targetCandidatePoolSize(safeRounds);
     const collected: MusicTrack[] = [];
     const seen = new Set<string>();
     const maxAttempts = 6;
-    const maxFetchSize = 50;
-    let requestSize = Math.min(maxFetchSize, Math.max(safeRounds * 2, safeRounds));
+    const maxFetchSize = TRACK_POOL_MAX_CANDIDATES;
+    let requestSize = Math.min(
+      maxFetchSize,
+      Math.max(safeRounds * 2, safeRounds + 3, Math.min(targetCandidateSize, 36)),
+    );
     let rawTotal = 0;
     let playableTotal = 0;
     let cleanTotal = 0;
@@ -324,7 +459,7 @@ export class RoomStore {
         seen.add(signature);
         collected.push(track);
         added += 1;
-        if (collected.length >= safeRounds) break;
+        if (collected.length >= targetCandidateSize) break;
       }
 
       logEvent("info", "room_start_trackpool_attempt", {
@@ -337,9 +472,10 @@ export class RoomStore {
         addedCount: added,
         accumulated: collected.length,
         requestedRounds: safeRounds,
+        targetCandidateSize,
       });
 
-      if (collected.length >= safeRounds) break;
+      if (collected.length >= targetCandidateSize) break;
       if (rawTrackPool.length <= 0 || cleanPool.length <= 0) {
         break;
       }
@@ -349,16 +485,140 @@ export class RoomStore {
         Math.max(requestSize + safeRounds, Math.ceil(requestSize * 1.5)),
       );
       const reachedCeiling = requestSize >= maxFetchSize;
+      const sourceLooksExhausted = rawTrackPool.length < requestSize;
+      if (added <= 0 && sourceLooksExhausted) break;
       if (added <= 0 && reachedCeiling) break;
       requestSize = nextSize;
     }
 
+    const split = this.splitAnswerAndDistractorPools(collected, safeRounds);
     return {
-      tracks: randomShuffle(collected).slice(0, safeRounds),
+      tracks: split.tracks,
+      distractorTracks: split.distractorTracks,
+      candidateCount: split.candidateCount,
       rawTotal,
       playableTotal,
       cleanTotal,
     };
+  }
+
+  private stopPlayersLikedPoolJob(roomCode: string) {
+    this.roomLikedPoolJobs.delete(roomCode);
+  }
+
+  private async buildPlayersLikedTrackPool(session: RoomSession, requestedRounds: number) {
+    const safeRounds = Math.max(1, requestedRounds);
+    const targetCandidateSize = this.targetCandidatePoolSize(safeRounds);
+    const contributors = this.playersLikedContributors(session);
+    const mergedTracks: MusicTrack[] = [];
+    const seen = new Set<string>();
+    let fetchedTotal = 0;
+
+    for (const contributor of contributors) {
+      const providers: LibraryProvider[] = [];
+      if (contributor.library.includeInPool.spotify && contributor.library.linkedProviders.spotify === "linked") {
+        providers.push("spotify");
+      }
+      if (contributor.library.includeInPool.deezer && contributor.library.linkedProviders.deezer === "linked") {
+        providers.push("deezer");
+      }
+      if (!contributor.userId || providers.length <= 0) continue;
+
+      const fetched = await withTimeout(
+        this.getPlayerLikedTracks({
+          userId: contributor.userId,
+          providers,
+          size: Math.max(targetCandidateSize, 20),
+        }),
+        20_000,
+        "PLAYERS_LIBRARY_TIMEOUT",
+      );
+      console.log("[players-liked-debug] contributor_fetch", {
+        roomCode: session.roomCode,
+        contributorPlayerId: contributor.id,
+        contributorUserId: contributor.userId,
+        providers,
+        fetchedCount: fetched.length,
+      });
+      fetchedTotal += fetched.length;
+
+      for (const track of fetched) {
+        if (!isTrackPlayable(track)) continue;
+        if (looksLikePromotionalTrack(track)) continue;
+        const key = trackSignature(track);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        mergedTracks.push(track);
+      }
+    }
+
+    const split = this.splitAnswerAndDistractorPools(mergedTracks, safeRounds);
+    console.log("[players-liked-debug] build_pool_done", {
+      roomCode: session.roomCode,
+      requestedRounds: safeRounds,
+      targetCandidateSize,
+      contributorsCount: contributors.length,
+      fetchedTotal,
+      mergedTracksCount: mergedTracks.length,
+      answersCount: split.tracks.length,
+      distractorCount: split.distractorTracks.length,
+      candidateCount: split.candidateCount,
+    });
+    return {
+      tracks: split.tracks,
+      distractorTracks: split.distractorTracks,
+      candidateCount: split.candidateCount,
+      fetchedTotal,
+      playableTotal: mergedTracks.length,
+      cleanTotal: mergedTracks.length,
+      contributorsCount: contributors.length,
+    };
+  }
+
+  private startPlayersLikedPoolBuild(session: RoomSession) {
+    if (session.sourceMode !== "players_liked") return;
+    if (this.roomLikedPoolJobs.has(session.roomCode)) {
+      this.roomLikedPoolRebuildRequested.add(session.roomCode);
+      return;
+    }
+
+    const roomCode = session.roomCode;
+    const desiredSize = Math.max(session.playersLikedRules.minTotalTracks, this.config.maxRounds);
+    this.roomLikedPoolRebuildRequested.delete(roomCode);
+    session.poolBuild.status = "building";
+    session.poolBuild.errorCode = null;
+    const buildJob = (async () => {
+      try {
+        const built = await this.buildPlayersLikedTrackPool(session, desiredSize);
+        if (session.sourceMode !== "players_liked") {
+          return;
+        }
+        session.playersLikedPool = [...built.tracks, ...built.distractorTracks];
+        session.poolBuild.status = built.tracks.length > 0 ? "ready" : "failed";
+        session.poolBuild.contributorsCount = built.contributorsCount;
+        session.poolBuild.playableTracksCount = built.candidateCount;
+        session.poolBuild.lastBuiltAtMs = this.now();
+        session.poolBuild.errorCode = built.tracks.length > 0 ? null : "NO_TRACKS_FOUND";
+      } catch (error) {
+        session.playersLikedPool = [];
+        session.poolBuild.status = "failed";
+        session.poolBuild.contributorsCount = this.playersLikedContributors(session).length;
+        session.poolBuild.playableTracksCount = 0;
+        session.poolBuild.lastBuiltAtMs = this.now();
+        session.poolBuild.errorCode = error instanceof Error ? error.message : "UNKNOWN_ERROR";
+      } finally {
+        this.stopPlayersLikedPoolJob(roomCode);
+        if (this.roomLikedPoolRebuildRequested.has(roomCode)) {
+          this.roomLikedPoolRebuildRequested.delete(roomCode);
+          const latest = this.rooms.get(roomCode);
+          if (latest && latest.sourceMode === "players_liked" && latest.manager.state() === "waiting") {
+            this.startPlayersLikedPoolBuild(latest);
+          }
+        }
+      }
+    })();
+
+    this.roomLikedPoolJobs.set(roomCode, buildJob);
   }
 
   private stopPreloadJob(roomCode: string) {
@@ -549,12 +809,37 @@ export class RoomStore {
       hostPlayerId: null,
       nextPlayerNumber: 1,
       trackPool: [],
+      distractorTrackPool: [],
+      sourceMode: "public_playlist",
+      publicPlaylistSelection: null,
+      playersLikedRules: {
+        minContributors: 1,
+        minTotalTracks: Math.max(1, this.config.maxRounds),
+      },
+      playersLikedPool: [],
+      poolBuild: {
+        status: "idle",
+        contributorsCount: 0,
+        playableTracksCount: 0,
+        lastBuiltAtMs: null,
+        errorCode: null,
+      },
       categoryQuery: options.categoryQuery?.trim() ?? "",
       totalRounds: 0,
       roundModes: [],
       roundChoices: new Map(),
       latestReveal: null,
     };
+    if (session.categoryQuery.toLowerCase().startsWith("deezer:playlist:")) {
+      session.publicPlaylistSelection = {
+        provider: "deezer",
+        id: session.categoryQuery.slice("deezer:playlist:".length),
+        name: session.categoryQuery,
+        trackCount: null,
+        sourceQuery: session.categoryQuery,
+        selectedByPlayerId: "system",
+      };
+    }
 
     this.rooms.set(roomCode, session);
     return { roomCode };
@@ -581,6 +866,7 @@ export class RoomStore {
       maxStreak: 0,
       totalResponseMs: 0,
       correctAnswers: 0,
+      library: defaultPlayerLibraryState(),
     };
 
     session.players.set(playerId, player);
@@ -598,7 +884,12 @@ export class RoomStore {
     };
   }
 
-  joinRoomAsUser(roomCode: string, displayName: string, userId: string | null) {
+  joinRoomAsUser(
+    roomCode: string,
+    displayName: string,
+    userId: string | null,
+    linkedProviders?: Partial<Record<LibraryProvider, { status: ProviderLinkStatus; estimatedTrackCount: number | null }>>,
+  ) {
     const joined = this.joinRoom(roomCode, displayName);
     if (joined.status !== "ok") return joined;
 
@@ -606,6 +897,21 @@ export class RoomStore {
     const player = session?.players.get(joined.value.playerId);
     if (player) {
       player.userId = userId;
+      if (linkedProviders) {
+        for (const provider of ["spotify", "deezer"] as const) {
+          const entry = linkedProviders[provider];
+          if (!entry) continue;
+          player.library.linkedProviders[provider] = normalizeProviderLinkStatus(entry.status);
+          player.library.estimatedTrackCount[provider] =
+            typeof entry.estimatedTrackCount === "number" && Number.isFinite(entry.estimatedTrackCount)
+              ? Math.max(0, Math.floor(entry.estimatedTrackCount))
+              : null;
+        }
+        player.library.syncStatus = "ready";
+      }
+    }
+    if (session?.sourceMode === "players_liked") {
+      this.startPlayersLikedPoolBuild(session);
     }
 
     return joined.value;
@@ -622,9 +928,181 @@ export class RoomStore {
     const normalized = categoryQuery.trim();
     if (normalized.length <= 0) return { status: "invalid_payload" as const };
 
+    session.sourceMode = "public_playlist";
+    if (normalized.toLowerCase().startsWith("deezer:playlist:")) {
+      const id = normalized.slice("deezer:playlist:".length).trim();
+      session.publicPlaylistSelection = {
+        provider: "deezer",
+        id,
+        name: normalized,
+        trackCount: null,
+        sourceQuery: normalized,
+        selectedByPlayerId: playerId,
+      };
+    } else {
+      session.publicPlaylistSelection = null;
+    }
+    session.playersLikedPool = [];
+    session.distractorTrackPool = [];
+    this.roomLikedPoolRebuildRequested.delete(roomCode);
+    session.poolBuild = {
+      status: "idle",
+      contributorsCount: 0,
+      playableTracksCount: 0,
+      lastBuiltAtMs: null,
+      errorCode: null,
+    };
     session.categoryQuery = normalized;
     this.resetReadyStates(session);
     return { status: "ok" as const, categoryQuery: normalized };
+  }
+
+  setRoomSourceMode(roomCode: string, playerId: string, mode: RoomSourceMode) {
+    const session = this.rooms.get(roomCode);
+    if (!session) return { status: "room_not_found" as const };
+    this.ensureHost(session);
+    if (!session.players.has(playerId)) return { status: "player_not_found" as const };
+    if (session.hostPlayerId !== playerId) return { status: "forbidden" as const };
+    if (session.manager.state() !== "waiting") return { status: "invalid_state" as const };
+
+    session.sourceMode = mode;
+    if (mode === "public_playlist") {
+      session.playersLikedPool = [];
+      session.distractorTrackPool = [];
+      this.roomLikedPoolRebuildRequested.delete(roomCode);
+      session.poolBuild = {
+        status: "idle",
+        contributorsCount: 0,
+        playableTracksCount: 0,
+        lastBuiltAtMs: null,
+        errorCode: null,
+      };
+      if (session.publicPlaylistSelection?.sourceQuery) {
+        session.categoryQuery = session.publicPlaylistSelection.sourceQuery;
+      } else if (session.categoryQuery === "players:liked") {
+        session.categoryQuery = "";
+      }
+    } else {
+      session.publicPlaylistSelection = null;
+      session.categoryQuery = "players:liked";
+      this.startPlayersLikedPoolBuild(session);
+    }
+    this.resetReadyStates(session);
+    return { status: "ok" as const, mode: session.sourceMode };
+  }
+
+  setRoomPublicPlaylist(
+    roomCode: string,
+    playerId: string,
+    selection: { id: string; name: string; trackCount: number | null; sourceQuery?: string },
+  ) {
+    const session = this.rooms.get(roomCode);
+    if (!session) return { status: "room_not_found" as const };
+    this.ensureHost(session);
+    if (!session.players.has(playerId)) return { status: "player_not_found" as const };
+    if (session.hostPlayerId !== playerId) return { status: "forbidden" as const };
+    if (session.manager.state() !== "waiting") return { status: "invalid_state" as const };
+    const id = selection.id.trim();
+    if (id.length <= 0) return { status: "invalid_payload" as const };
+
+    const sourceQuery = selection.sourceQuery?.trim().length
+      ? selection.sourceQuery.trim()
+      : `deezer:playlist:${id}`;
+    session.sourceMode = "public_playlist";
+    session.publicPlaylistSelection = {
+      provider: "deezer",
+      id,
+      name: selection.name.trim().length > 0 ? selection.name.trim() : id,
+      trackCount:
+        typeof selection.trackCount === "number" && Number.isFinite(selection.trackCount)
+          ? Math.max(0, Math.floor(selection.trackCount))
+          : null,
+      sourceQuery,
+      selectedByPlayerId: playerId,
+    };
+    session.playersLikedPool = [];
+    session.distractorTrackPool = [];
+    this.roomLikedPoolRebuildRequested.delete(roomCode);
+    session.poolBuild = {
+      status: "idle",
+      contributorsCount: 0,
+      playableTracksCount: 0,
+      lastBuiltAtMs: null,
+      errorCode: null,
+    };
+    session.categoryQuery = sourceQuery;
+    this.resetReadyStates(session);
+    return {
+      status: "ok" as const,
+      categoryQuery: session.categoryQuery,
+      sourceMode: session.sourceMode,
+    };
+  }
+
+  setPlayerLibraryContribution(
+    roomCode: string,
+    playerId: string,
+    provider: LibraryProvider,
+    includeInPool: boolean,
+  ) {
+    const session = this.rooms.get(roomCode);
+    if (!session) return { status: "room_not_found" as const };
+    if (session.manager.state() !== "waiting") return { status: "invalid_state" as const };
+    const player = session.players.get(playerId);
+    if (!player) return { status: "player_not_found" as const };
+    if (!player.userId) return { status: "forbidden" as const };
+
+    player.library.includeInPool[provider] = includeInPool;
+    if (session.sourceMode === "players_liked") {
+      session.poolBuild.status = "building";
+      session.poolBuild.errorCode = null;
+      this.startPlayersLikedPoolBuild(session);
+    }
+    this.resetReadyStates(session);
+    return {
+      status: "ok" as const,
+      includeInPool: player.library.includeInPool[provider],
+    };
+  }
+
+  setPlayerLibraryLinks(
+    roomCode: string,
+    playerId: string,
+    links: Partial<Record<LibraryProvider, { status: ProviderLinkStatus; estimatedTrackCount: number | null }>>,
+  ) {
+    const session = this.rooms.get(roomCode);
+    if (!session) return { status: "room_not_found" as const };
+    const player = session.players.get(playerId);
+    if (!player) return { status: "player_not_found" as const };
+
+    player.library.syncStatus = "ready";
+    player.library.lastError = null;
+    for (const provider of ["spotify", "deezer"] as const) {
+      const next = links[provider];
+      if (!next) continue;
+      player.library.linkedProviders[provider] = normalizeProviderLinkStatus(next.status);
+      player.library.estimatedTrackCount[provider] =
+        typeof next.estimatedTrackCount === "number" && Number.isFinite(next.estimatedTrackCount)
+          ? Math.max(0, Math.floor(next.estimatedTrackCount))
+          : null;
+      if (player.library.linkedProviders[provider] !== "linked") {
+        player.library.includeInPool[provider] = false;
+      }
+    }
+
+    if (session.sourceMode === "players_liked") {
+      session.poolBuild.status = "building";
+      session.poolBuild.errorCode = null;
+      this.startPlayersLikedPoolBuild(session);
+    }
+
+    return {
+      status: "ok" as const,
+      linkedProviders: {
+        spotify: player.library.linkedProviders.spotify,
+        deezer: player.library.linkedProviders.deezer,
+      },
+    };
   }
 
   setPlayerReady(roomCode: string, playerId: string, ready: boolean) {
@@ -650,6 +1128,9 @@ export class RoomStore {
     session.players.delete(targetPlayerId);
     this.ensureHost(session);
     this.resetReadyStates(session);
+    if (session.sourceMode === "players_liked") {
+      this.startPlayersLikedPoolBuild(session);
+    }
     return { status: "ok" as const, playerCount: session.players.size };
   }
 
@@ -661,12 +1142,17 @@ export class RoomStore {
     session.players.delete(playerId);
     if (session.players.size <= 0) {
       this.stopPreloadJob(roomCode);
+      this.stopPlayersLikedPoolJob(roomCode);
+      this.roomLikedPoolRebuildRequested.delete(roomCode);
       this.rooms.delete(roomCode);
       return { status: "ok" as const, playerCount: 0, hostPlayerId: null };
     }
     this.ensureHost(session);
     if (session.manager.state() === "waiting") {
       this.resetReadyStates(session);
+      if (session.sourceMode === "players_liked") {
+        this.startPlayersLikedPoolBuild(session);
+      }
     }
 
     return { status: "ok" as const, playerCount: session.players.size, hostPlayerId: session.hostPlayerId };
@@ -681,12 +1167,25 @@ export class RoomStore {
     if (session.manager.state() !== "results") return { status: "invalid_state" as const };
 
     this.stopPreloadJob(roomCode);
+    this.stopPlayersLikedPoolJob(roomCode);
+    this.roomLikedPoolRebuildRequested.delete(roomCode);
     session.manager.resetToWaiting();
     session.trackPool = [];
+    session.distractorTrackPool = [];
     session.totalRounds = 0;
     session.roundModes = [];
     session.roundChoices.clear();
     session.latestReveal = null;
+    session.sourceMode = "public_playlist";
+    session.publicPlaylistSelection = null;
+    session.playersLikedPool = [];
+    session.poolBuild = {
+      status: "idle",
+      contributorsCount: 0,
+      playableTracksCount: 0,
+      lastBuiltAtMs: null,
+      errorCode: null,
+    };
     session.categoryQuery = "";
     this.resetReadyStates(session);
 
@@ -696,6 +1195,8 @@ export class RoomStore {
       player.maxStreak = 0;
       player.totalResponseMs = 0;
       player.correctAnswers = 0;
+      player.library.includeInPool.spotify = false;
+      player.library.includeInPool.deezer = false;
     }
 
     return {
@@ -736,13 +1237,6 @@ export class RoomStore {
         error: "NO_PLAYERS" as const,
       };
     }
-    if (session.categoryQuery.trim().length <= 0) {
-      return {
-        ok: false as const,
-        error: "SOURCE_NOT_SET" as const,
-      };
-    }
-
     const allReady = [...session.players.values()].every((player) => player.isReady);
     if (!allReady) {
       return {
@@ -752,7 +1246,46 @@ export class RoomStore {
     }
 
     const poolSize = Math.max(1, this.config.maxRounds);
-    const resolvedQuery = session.categoryQuery;
+    if (session.sourceMode === "public_playlist") {
+      const sourceQuery = this.sourceQueryForSession(session);
+      if (sourceQuery.length <= 0) {
+        return {
+          ok: false as const,
+          error: "SOURCE_NOT_SET" as const,
+        };
+      }
+    } else {
+      const contributors = this.playersLikedContributors(session);
+      if (contributors.length < session.playersLikedRules.minContributors) {
+        return {
+          ok: false as const,
+          error: "PLAYERS_LIBRARY_NOT_READY" as const,
+        };
+      }
+      if (session.poolBuild.status === "building") {
+        const waitDeadlineMs = Date.now() + 12_000;
+        while (session.poolBuild.status === "building") {
+          const inFlight = this.roomLikedPoolJobs.get(roomCode);
+          if (!inFlight) break;
+          const remainingMs = waitDeadlineMs - Date.now();
+          if (remainingMs <= 0) break;
+          try {
+            await withTimeout(inFlight, remainingMs, "PLAYERS_LIBRARY_SYNC_TIMEOUT");
+          } catch {
+            // Keep fallback error below when queued jobs do not finish in time.
+            break;
+          }
+        }
+        if (session.poolBuild.status === "building") {
+          return {
+            ok: false as const,
+            error: "PLAYERS_LIBRARY_SYNCING" as const,
+          };
+        }
+      }
+    }
+
+    const resolvedQuery = this.sourceQueryForSession(session);
     const startupLoadStartedAt = Date.now();
     logEvent("info", "room_start_trackpool_loading_begin", {
       roomCode,
@@ -764,12 +1297,16 @@ export class RoomStore {
 
     let startPoolStats: {
       tracks: MusicTrack[];
+      distractorTracks: MusicTrack[];
+      candidateCount: number;
       rawTotal: number;
       playableTotal: number;
       cleanTotal: number;
     };
     try {
-      startPoolStats = await this.buildStartTrackPool(resolvedQuery, poolSize);
+      startPoolStats = session.sourceMode === "players_liked"
+        ? await this.buildPlayersLikedTrackPool(session, poolSize)
+        : await this.buildStartTrackPool(resolvedQuery, poolSize);
     } catch (error) {
       if (error instanceof Error && error.message === SPOTIFY_RATE_LIMITED_ERROR) {
         return {
@@ -786,6 +1323,8 @@ export class RoomStore {
         requestedRounds: poolSize,
         durationMs: Date.now() - startupLoadStartedAt,
         error: error instanceof Error ? error.message : "UNKNOWN_ERROR",
+        youtubeProviderMetrics: providerMetricsSnapshot().youtube ?? null,
+        spotifyProviderMetrics: providerMetricsSnapshot().spotify ?? null,
       });
       return {
         ok: false as const,
@@ -803,14 +1342,29 @@ export class RoomStore {
       playablePoolSize: startPoolStats.playableTotal,
       cleanPoolSize: startPoolStats.cleanTotal,
       selectedPoolSize: startPoolStats.tracks.length,
+      distractorPoolSize: startPoolStats.distractorTracks.length,
+      candidatePoolSize: startPoolStats.candidateCount,
     });
 
     session.trackPool = startPoolStats.tracks;
+    session.distractorTrackPool = startPoolStats.distractorTracks;
+    if (session.sourceMode === "players_liked") {
+      session.playersLikedPool = [...startPoolStats.tracks, ...startPoolStats.distractorTracks];
+      session.poolBuild.status = startPoolStats.tracks.length > 0 ? "ready" : "failed";
+      session.poolBuild.contributorsCount = this.playersLikedContributors(session).length;
+      session.poolBuild.playableTracksCount = startPoolStats.candidateCount;
+      session.poolBuild.lastBuiltAtMs = this.now();
+      session.poolBuild.errorCode = startPoolStats.tracks.length > 0 ? null : "NO_TRACKS_FOUND";
+    }
     session.latestReveal = null;
     this.refreshRoundPlan(session);
 
     if (session.totalRounds < poolSize || session.trackPool.length < poolSize) {
-      if (resolvedQuery.toLowerCase().startsWith("spotify:") && this.isSpotifyRateLimitedRecently()) {
+      if (
+        session.sourceMode === "public_playlist" &&
+        resolvedQuery.toLowerCase().startsWith("spotify:") &&
+        this.isSpotifyRateLimitedRecently()
+      ) {
         return {
           ok: false as const,
           error: "SPOTIFY_RATE_LIMITED" as const,
@@ -821,8 +1375,18 @@ export class RoomStore {
       logEvent("warn", "room_start_no_tracks", {
         roomCode,
         categoryQuery: resolvedQuery,
+        reason: session.trackPool.length <= 0 ? "EMPTY_POOL" : "INSUFFICIENT_POOL",
         requestedPoolSize: poolSize,
         selectedPoolSize: session.trackPool.length,
+        distractorPoolSize: session.distractorTrackPool.length,
+        candidatePoolSize: startPoolStats.candidateCount,
+        missingTracks: Math.max(0, poolSize - session.trackPool.length),
+        preparedRounds: session.totalRounds,
+        rawTrackPoolSize: startPoolStats.rawTotal,
+        playablePoolSize: startPoolStats.playableTotal,
+        cleanPoolSize: startPoolStats.cleanTotal,
+        youtubeProviderMetrics: providerMetricsSnapshot().youtube ?? null,
+        spotifyProviderMetrics: providerMetricsSnapshot().spotify ?? null,
         players: session.players.size,
       });
       return {
@@ -851,6 +1415,8 @@ export class RoomStore {
       roomCode,
       categoryQuery: resolvedQuery,
       poolSize: session.trackPool.length,
+      distractorPoolSize: session.distractorTrackPool.length,
+      candidatePoolSize: startPoolStats.candidateCount,
       rawPoolSize: startPoolStats.rawTotal,
       playablePoolSize: startPoolStats.playableTotal,
       removedPromotionalTracks: Math.max(
@@ -875,6 +1441,7 @@ export class RoomStore {
       state: session.manager.state(),
       poolSize: session.trackPool.length,
       categoryQuery: session.categoryQuery,
+      sourceMode: session.sourceMode,
       totalRounds: session.totalRounds,
       deadlineMs: session.manager.deadlineMs(),
     };
@@ -922,6 +1489,13 @@ export class RoomStore {
     return { status: "ok" as const, accepted: result.accepted };
   }
 
+  playerUserId(roomCode: string, playerId: string) {
+    const session = this.rooms.get(roomCode);
+    if (!session) return null;
+    const player = session.players.get(playerId);
+    return player?.userId ?? null;
+  }
+
   roomState(roomCode: string) {
     const session = this.rooms.get(roomCode);
     if (!session) return null;
@@ -942,10 +1516,27 @@ export class RoomStore {
       displayName: player.displayName,
       isReady: player.isReady,
       isHost: player.id === hostPlayerId,
+      canContributeLibrary: Boolean(player.userId),
+      libraryContribution: {
+        includeInPool: {
+          spotify: player.library.includeInPool.spotify,
+          deezer: player.library.includeInPool.deezer,
+        },
+        linkedProviders: {
+          spotify: player.library.linkedProviders.spotify,
+          deezer: player.library.linkedProviders.deezer,
+        },
+        estimatedTrackCount: {
+          spotify: player.library.estimatedTrackCount.spotify,
+          deezer: player.library.estimatedTrackCount.deezer,
+        },
+        syncStatus: player.library.syncStatus,
+        lastError: player.library.lastError,
+      },
     }));
     const readyCount = players.filter((player) => player.isReady).length;
     const allReady = players.length > 0 && readyCount === players.length;
-    const canStart = state === "waiting" && allReady && session.categoryQuery.trim().length > 0;
+    const canStart = this.canStartWaitingSession(session);
     const leaderboard = this.ranking(session).slice(0, 10);
     const revealMedia =
       state === "reveal" || state === "leaderboard" || state === "results"
@@ -983,6 +1574,31 @@ export class RoomStore {
       canStart,
       poolSize: session.trackPool.length,
       categoryQuery: session.categoryQuery,
+      sourceMode: session.sourceMode,
+      sourceConfig: {
+        mode: session.sourceMode,
+        publicPlaylist: session.publicPlaylistSelection
+          ? {
+              provider: session.publicPlaylistSelection.provider,
+              id: session.publicPlaylistSelection.id,
+              name: session.publicPlaylistSelection.name,
+              trackCount: session.publicPlaylistSelection.trackCount,
+              sourceQuery: session.publicPlaylistSelection.sourceQuery,
+              selectedByPlayerId: session.publicPlaylistSelection.selectedByPlayerId,
+            }
+          : null,
+        playersLikedRules: {
+          minContributors: session.playersLikedRules.minContributors,
+          minTotalTracks: session.playersLikedRules.minTotalTracks,
+        },
+      },
+      poolBuild: {
+        status: session.poolBuild.status,
+        contributorsCount: session.poolBuild.contributorsCount,
+        playableTracksCount: session.poolBuild.playableTracksCount,
+        lastBuiltAtMs: session.poolBuild.lastBuiltAtMs,
+        errorCode: session.poolBuild.errorCode,
+      },
       totalRounds: session.totalRounds,
       deadlineMs: session.manager.deadlineMs(),
       previewUrl:

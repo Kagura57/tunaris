@@ -1,7 +1,10 @@
 import { Elysia } from "elysia";
 import { readSessionFromHeaders } from "../auth/client";
+import { musicAccountRepository, type MusicProvider } from "../repositories/MusicAccountRepository";
 import { matchRepository } from "../repositories/MatchRepository";
 import { profileRepository } from "../repositories/ProfileRepository";
+import { buildMusicConnectUrl, handleMusicOAuthCallback } from "../services/MusicOAuthService";
+import { fetchUserLikedTracks, fetchUserPlaylists } from "../services/UserMusicLibrary";
 
 async function requireSession(headers: unknown, set: { status: number }) {
   const authContext = await readSessionFromHeaders(headers as Headers);
@@ -10,6 +13,18 @@ async function requireSession(headers: unknown, set: { status: number }) {
     return null;
   }
   return authContext;
+}
+
+function parseProvider(raw: string): MusicProvider | null {
+  if (raw === "spotify" || raw === "deezer") return raw;
+  return null;
+}
+
+function parseLimit(raw: string | undefined, fallback: number) {
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.min(parsed, 200));
 }
 
 export const accountRoutes = new Elysia({ prefix: "/account" })
@@ -44,5 +59,123 @@ export const accountRoutes = new Elysia({ prefix: "/account" })
       user: authContext.user,
       profile,
       history,
+    };
+  })
+  .get("/music/providers", async ({ headers, set }) => {
+    const authContext = await requireSession(headers as unknown, set);
+    if (!authContext) {
+      return { ok: false, error: "UNAUTHORIZED" };
+    }
+
+    const links = await musicAccountRepository.listLinkStatuses(authContext.user.id);
+    return {
+      ok: true as const,
+      providers: links,
+    };
+  })
+  .get("/music/:provider/connect/start", async ({ headers, params, query, set }) => {
+    const authContext = await requireSession(headers as unknown, set);
+    if (!authContext) {
+      return { ok: false, error: "UNAUTHORIZED" };
+    }
+    const provider = parseProvider(params.provider);
+    if (!provider) {
+      set.status = 400;
+      return { ok: false, error: "INVALID_PROVIDER" };
+    }
+    const connect = buildMusicConnectUrl({
+      provider,
+      userId: authContext.user.id,
+      returnTo: typeof query.returnTo === "string" ? query.returnTo : null,
+    });
+    if (!connect) {
+      set.status = 503;
+      return { ok: false, error: "PROVIDER_NOT_CONFIGURED" };
+    }
+    return {
+      ok: true as const,
+      provider,
+      authorizeUrl: connect.url,
+    };
+  })
+  .get("/music/:provider/connect/callback", async ({ params, query, set }) => {
+    const provider = parseProvider(params.provider);
+    if (!provider) {
+      set.status = 400;
+      return { ok: false, error: "INVALID_PROVIDER" };
+    }
+    const code = typeof query.code === "string" ? query.code.trim() : "";
+    const state = typeof query.state === "string" ? query.state.trim() : "";
+    if (!code || !state) {
+      set.status = 400;
+      return "Missing OAuth code/state.";
+    }
+
+    const result = await handleMusicOAuthCallback({
+      provider,
+      code,
+      state,
+    });
+    const success = result.ok;
+    const target = result.returnTo?.trim() ?? "";
+    const redirect = target.length > 0 ? target : "/";
+    set.headers["content-type"] = "text/html; charset=utf-8";
+    return `<!doctype html><html><body><script>const message=${JSON.stringify(
+      { source: "tunaris-music-oauth", provider, ok: success },
+    )};if(window.opener){window.opener.postMessage(message,"*");window.close();}else{window.location.replace(${JSON.stringify(redirect)});}</script></body></html>`;
+  })
+  .post("/music/:provider/disconnect", async ({ headers, params, set }) => {
+    const authContext = await requireSession(headers as unknown, set);
+    if (!authContext) {
+      return { ok: false, error: "UNAUTHORIZED" };
+    }
+    const provider = parseProvider(params.provider);
+    if (!provider) {
+      set.status = 400;
+      return { ok: false, error: "INVALID_PROVIDER" };
+    }
+
+    await musicAccountRepository.deleteLink(authContext.user.id, provider);
+    const providers = await musicAccountRepository.listLinkStatuses(authContext.user.id);
+    return {
+      ok: true as const,
+      providers,
+    };
+  })
+  .get("/music/:provider/liked", async ({ headers, params, query, set }) => {
+    const authContext = await requireSession(headers as unknown, set);
+    if (!authContext) {
+      return { ok: false, error: "UNAUTHORIZED" };
+    }
+    const provider = parseProvider(params.provider);
+    if (!provider) {
+      set.status = 400;
+      return { ok: false, error: "INVALID_PROVIDER" };
+    }
+    const limit = parseLimit(typeof query.limit === "string" ? query.limit : undefined, 80);
+    const payload = await fetchUserLikedTracks(authContext.user.id, provider, limit);
+    return {
+      ok: true as const,
+      provider,
+      tracks: payload.tracks,
+      total: payload.total,
+    };
+  })
+  .get("/music/:provider/playlists", async ({ headers, params, query, set }) => {
+    const authContext = await requireSession(headers as unknown, set);
+    if (!authContext) {
+      return { ok: false, error: "UNAUTHORIZED" };
+    }
+    const provider = parseProvider(params.provider);
+    if (!provider) {
+      set.status = 400;
+      return { ok: false, error: "INVALID_PROVIDER" };
+    }
+    const limit = parseLimit(typeof query.limit === "string" ? query.limit : undefined, 30);
+    const playlists = await fetchUserPlaylists(authContext.user.id, provider, limit);
+    return {
+      ok: true as const,
+      provider,
+      playlists,
     };
   });

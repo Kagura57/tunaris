@@ -64,7 +64,7 @@ const DEFAULT_SESSION: GameSession = {
   roomCode: null,
   playerId: null,
   displayName: "",
-  categoryQuery: "spotify:popular",
+  categoryQuery: "",
 };
 
 const DEFAULT_ACCOUNT: AccountState = {

@@ -82,8 +82,13 @@ a {
 
 .topbar {
   display: grid;
-  grid-template-columns: 1fr;
-  gap: 4px;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    "brand nav"
+    "subtitle nav"
+    "meta nav";
+  gap: 4px 14px;
+  align-items: center;
   padding: 16px 18px;
   border-radius: 18px;
   border: 1px solid var(--line);
@@ -98,7 +103,12 @@ a {
   text-decoration: none;
 }
 
+.topbar .brand {
+  grid-area: brand;
+}
+
 .brand-subtitle {
+  grid-area: subtitle;
   margin: 0;
   color: var(--muted);
   text-transform: uppercase;
@@ -107,6 +117,7 @@ a {
 }
 
 .topbar-meta {
+  grid-area: meta;
   margin: 4px 0 0;
   max-width: 70ch;
   font-size: 0.86rem;
@@ -118,9 +129,15 @@ a {
   grid-area: nav;
   display: flex;
   gap: 8px;
-  align-items: center;
+  align-items: stretch;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.topbar-nav .ghost-btn,
+.topbar-nav .solid-btn {
+  display: inline-flex;
+  align-items: center;
 }
 
 .ghost-btn,
@@ -185,6 +202,16 @@ a {
 .ghost-btn.selected {
   border-color: rgba(54, 214, 180, 0.8);
   background: rgba(54, 214, 180, 0.14);
+}
+
+.inline-checkbox {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.inline-checkbox input {
+  margin: 0;
 }
 
 .wide {
@@ -1367,6 +1394,11 @@ select option {
 
   .topbar {
     grid-template-columns: 1fr;
+    grid-template-areas:
+      "brand"
+      "subtitle"
+      "meta"
+      "nav";
   }
 
   .stage-hud {

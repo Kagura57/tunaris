@@ -8,6 +8,9 @@
   "scripts": {
     "dev:api": "cd apps/api && bun run dev",
     "dev:web": "cd apps/web && bun run dev",
+    "db:migrate": "cd apps/api && bun run db:migrate",
+    "docker:up": "docker compose up -d postgres",
+    "docker:down": "docker compose down",
     "lint": "oxlint .",
     "format": "oxfmt --write .",
     "test": "bun test apps/api/tests packages/shared/src apps/web/src/routes",

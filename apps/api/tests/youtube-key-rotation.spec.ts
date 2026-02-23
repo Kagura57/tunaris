@@ -155,6 +155,106 @@ describe("youtube key rotation", () => {
     });
   });
 
+  it("falls back to default invidious instances when API key fails and no instances are configured", async () => {
+    readEnvVarMock.mockImplementation((key) => {
+      if (key === "YOUTUBE_API_KEY") return "quota-key";
+      return undefined;
+    });
+
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.hostname.includes("googleapis.com")) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              error: {
+                code: 403,
+                message: "quotaExceeded",
+              },
+            },
+            403,
+          ),
+        );
+      }
+
+      if (url.hostname === "yewtu.be" && url.pathname === "/api/v1/search") {
+        return Promise.resolve(
+          jsonResponse([
+            {
+              type: "video",
+              videoId: "default-inv-1",
+              title: "Default Invidious Song",
+              author: "Fallback Artist",
+            },
+          ]),
+        );
+      }
+
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const tracks = await searchYouTube("quota default fallback", 5);
+    expect(tracks).toHaveLength(1);
+    expect(tracks[0]).toMatchObject({
+      provider: "youtube",
+      id: "default-inv-1",
+      title: "Default Invidious Song",
+      artist: "Fallback Artist",
+    });
+  });
+
+  it("falls back to ytmusic endpoint when configured and youtube api keys fail", async () => {
+    readEnvVarMock.mockImplementation((key) => {
+      if (key === "YOUTUBE_API_KEY") return "quota-key";
+      if (key === "YTMUSIC_SEARCH_URL") return "https://ytmusic-proxy.example/search";
+      return undefined;
+    });
+
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.hostname.includes("googleapis.com")) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              error: {
+                code: 403,
+                message: "quotaExceeded",
+              },
+            },
+            403,
+          ),
+        );
+      }
+
+      if (url.hostname === "ytmusic-proxy.example" && url.pathname === "/search") {
+        return Promise.resolve(
+          jsonResponse({
+            tracks: [
+              {
+                videoId: "ytmusic-001",
+                title: "Bridge Song",
+                artist: "Bridge Artist",
+              },
+            ],
+          }),
+        );
+      }
+
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const tracks = await searchYouTube("ytmusic bridge", 5);
+    expect(tracks).toHaveLength(1);
+    expect(tracks[0]).toMatchObject({
+      provider: "youtube",
+      id: "ytmusic-001",
+      title: "Bridge Song",
+      artist: "Bridge Artist",
+    });
+  });
+
   it("falls back to youtube web search and oembed when no API key is configured", async () => {
     readEnvVarMock.mockImplementation((key) => {
       if (key === "YOUTUBE_INVIDIOUS_INSTANCES") return "https://inv-empty.example";

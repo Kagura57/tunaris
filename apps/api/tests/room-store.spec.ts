@@ -524,6 +524,7 @@ describe("RoomStore gameplay progression", () => {
   });
 
   it("starts only when the full requested round pool is prepared", async () => {
+    let nowMs = 0;
     const requestedSizes: number[] = [];
     const makeTrack = (index: number): MusicTrack => ({
       provider: "youtube",
@@ -534,6 +535,7 @@ describe("RoomStore gameplay progression", () => {
       sourceUrl: `https://www.youtube.com/watch?v=yt-${index}`,
     });
     const store = new RoomStore({
+      now: () => nowMs,
       getTrackPool: async (_query, size) => {
         requestedSizes.push(size);
         return Array.from({ length: size }, (_, index) => makeTrack(index + 1));
@@ -561,6 +563,83 @@ describe("RoomStore gameplay progression", () => {
     expect((started && "poolSize" in started ? started.poolSize : 0)).toBe(10);
     expect((started && "totalRounds" in started ? started.totalRounds : 0)).toBe(10);
     expect(requestedSizes[0]).toBeGreaterThanOrEqual(10);
+
+    nowMs = 5;
+    const playing = store.roomState(created.roomCode);
+    expect(playing?.state).toBe("playing");
+    expect(playing?.mode).toBe("mcq");
+    expect(playing?.choices).toHaveLength(4);
+    expect((playing?.choices ?? []).some((choice) => choice.startsWith("Choix alternatif"))).toBe(false);
+  });
+
+  it("supports players_liked mode with linked provider contributions", async () => {
+    const likedTracks: MusicTrack[] = Array.from({ length: 12 }, (_, index) => ({
+      provider: "youtube",
+      id: `liked-${index + 1}`,
+      title: `Liked Track ${index + 1}`,
+      artist: `Artist ${index + 1}`,
+      previewUrl: null,
+      sourceUrl: `https://www.youtube.com/watch?v=liked-${index + 1}`,
+    }));
+    const store = new RoomStore({
+      getPlayerLikedTracks: async () => likedTracks,
+      config: {
+        maxRounds: 10,
+        countdownMs: 5,
+        playingMs: 20,
+        revealMs: 5,
+        leaderboardMs: 5,
+      },
+    });
+
+    const created = store.createRoom();
+    const host = store.joinRoomAsUser(
+      created.roomCode,
+      "Host",
+      "user-host",
+      { spotify: { status: "linked", estimatedTrackCount: 120 } },
+    );
+    const guest = store.joinRoom(created.roomCode, "Guest");
+    if ("status" in host) return;
+    if (guest.status !== "ok") return;
+
+    const modeSet = store.setRoomSourceMode(created.roomCode, host.playerId, "players_liked");
+    expect(modeSet.status).toBe("ok");
+    const contribution = store.setPlayerLibraryContribution(
+      created.roomCode,
+      host.playerId,
+      "spotify",
+      true,
+    );
+    expect(contribution.status).toBe("ok");
+    store.setPlayerReady(created.roomCode, host.playerId, true);
+    store.setPlayerReady(created.roomCode, guest.value.playerId, true);
+
+    const started = await store.startGame(created.roomCode, host.playerId);
+    expect(started).toMatchObject({
+      ok: true,
+      sourceMode: "players_liked",
+    });
+  });
+
+  it("blocks players_liked mode start when no linked contributor is opted-in", async () => {
+    const store = new RoomStore({
+      getPlayerLikedTracks: async () => [],
+      config: {
+        maxRounds: 5,
+      },
+    });
+    const created = store.createRoom();
+    const host = store.joinRoomAsUser(created.roomCode, "Host", "user-host");
+    if ("status" in host) return;
+    store.setRoomSourceMode(created.roomCode, host.playerId, "players_liked");
+    store.setPlayerReady(created.roomCode, host.playerId, true);
+
+    const started = await store.startGame(created.roomCode, host.playerId);
+    expect(started).toMatchObject({
+      ok: false,
+      error: "PLAYERS_LIBRARY_NOT_READY",
+    });
   });
 
   it("returns SPOTIFY_RATE_LIMITED when upstream spotify is throttled", async () => {

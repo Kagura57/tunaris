@@ -2,13 +2,18 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import {
+  disconnectMusicProvider,
+  getMusicProviderConnectUrl,
   HttpStatusError,
   kickPlayer,
   leaveRoom as leaveRoomApi,
+  refreshPlayerLibraryLinks,
   replayRoom,
   searchPlaylistsAcrossProviders,
+  setPlayerLibraryContribution,
   setPlayerReady,
-  setRoomSource,
+  setRoomPublicPlaylist,
+  setRoomSourceMode,
   skipRoomRound,
   startRoom,
   submitRoomAnswer,
@@ -22,7 +27,7 @@ const COUNTDOWN_MS = 3_000;
 const REVEAL_MS = 4_000;
 const LEADERBOARD_MS = 3_000;
 
-type SourceMode = "playlist" | "anilist";
+type SourceMode = "public_playlist" | "players_liked";
 
 function clamp01(value: number) {
   return Math.max(0, Math.min(1, value));
@@ -82,7 +87,7 @@ function revealArtworkUrl(reveal: { provider: UnifiedPlaylistOption["provider"] 
 function isUnifiedPlaylistOption(value: unknown): value is UnifiedPlaylistOption {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<UnifiedPlaylistOption>;
-  const providerOk = candidate.provider === "spotify" || candidate.provider === "deezer";
+  const providerOk = candidate.provider === "deezer";
   return (
     providerOk &&
     typeof candidate.id === "string" &&
@@ -108,10 +113,9 @@ export function RoomPlayPage() {
   } | null>(null);
   const [submittedMcq, setSubmittedMcq] = useState<{ round: number; choice: string } | null>(null);
   const [submittedText, setSubmittedText] = useState<{ round: number; value: string } | null>(null);
-  const [sourceMode, setSourceMode] = useState<SourceMode>("playlist");
+  const [sourceMode, setSourceMode] = useState<SourceMode>("public_playlist");
   const [playlistQuery, setPlaylistQuery] = useState("top hits");
   const [debouncedPlaylistQuery, setDebouncedPlaylistQuery] = useState("top hits");
-  const [aniListUsers, setAniListUsers] = useState("");
   const [spotifyRateLimitUntilMs, setSpotifyRateLimitUntilMs] = useState<number | null>(null);
   const youtubeIframeRef = useRef<HTMLIFrameElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -142,6 +146,11 @@ export function RoomPlayPage() {
   const currentPlayer = state?.players.find((player) => player.playerId === session.playerId) ?? null;
   const typedPlaylistQuery = playlistQuery.trim();
   const normalizedPlaylistQuery = debouncedPlaylistQuery.trim();
+
+  useEffect(() => {
+    if (!state?.sourceMode) return;
+    setSourceMode(state.sourceMode);
+  }, [state?.sourceMode]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -187,11 +196,11 @@ export function RoomPlayPage() {
         playlists,
       };
     },
-    enabled: isWaitingLobby && isHost && sourceMode === "playlist" && normalizedPlaylistQuery.length >= 2,
+    enabled: isWaitingLobby && isHost && sourceMode === "public_playlist" && normalizedPlaylistQuery.length >= 2,
     staleTime: 2 * 60_000,
   });
   useEffect(() => {
-    if (!isWaitingLobby || !isHost || sourceMode !== "playlist" || normalizedPlaylistQuery.length < 2) return;
+    if (!isWaitingLobby || !isHost || sourceMode !== "public_playlist" || normalizedPlaylistQuery.length < 2) return;
     if (playlistSearchQuery.isError) {
       console.error("[playlist-search] query failed", playlistSearchQuery.error);
       return;
@@ -265,17 +274,69 @@ export function RoomPlayPage() {
     },
   });
 
-  const sourceMutation = useMutation({
-    mutationFn: (categoryQuery: string) => {
+  const sourceModeMutation = useMutation({
+    mutationFn: (mode: SourceMode) => {
       if (!session.playerId) throw new Error("PLAYER_NOT_FOUND");
-      return setRoomSource({
+      return setRoomSourceMode({
         roomCode,
         playerId: session.playerId,
-        categoryQuery,
+        mode,
       });
     },
     onSuccess: () => snapshotQuery.refetch(),
   });
+
+  const publicPlaylistMutation = useMutation({
+    mutationFn: (playlist: UnifiedPlaylistOption) => {
+      if (!session.playerId) throw new Error("PLAYER_NOT_FOUND");
+      return setRoomPublicPlaylist({
+        roomCode,
+        playerId: session.playerId,
+        id: playlist.id,
+        name: playlist.name,
+        trackCount: playlist.trackCount,
+        sourceQuery: playlist.sourceQuery,
+      });
+    },
+    onSuccess: () => snapshotQuery.refetch(),
+  });
+
+  const contributionMutation = useMutation({
+    mutationFn: (input: { provider: "spotify" | "deezer"; includeInPool: boolean }) => {
+      if (!session.playerId) throw new Error("PLAYER_NOT_FOUND");
+      return setPlayerLibraryContribution({
+        roomCode,
+        playerId: session.playerId,
+        provider: input.provider,
+        includeInPool: input.includeInPool,
+      });
+    },
+    onSuccess: () => snapshotQuery.refetch(),
+  });
+
+  const refreshLinksMutation = useMutation({
+    mutationFn: () => {
+      if (!session.playerId) throw new Error("PLAYER_NOT_FOUND");
+      return refreshPlayerLibraryLinks({
+        roomCode,
+        playerId: session.playerId,
+      });
+    },
+    onSuccess: () => snapshotQuery.refetch(),
+  });
+
+  useEffect(() => {
+    function onOAuthMessage(event: MessageEvent) {
+      if (!event.data || typeof event.data !== "object") return;
+      const payload = event.data as { source?: string; ok?: boolean };
+      if (payload.source !== "tunaris-music-oauth") return;
+      if (payload.ok === true && session.playerId) {
+        refreshLinksMutation.mutate();
+      }
+    }
+    window.addEventListener("message", onOAuthMessage);
+    return () => window.removeEventListener("message", onOAuthMessage);
+  }, [refreshLinksMutation, session.playerId]);
 
   const readyMutation = useMutation({
     mutationFn: (ready: boolean) => {
@@ -334,7 +395,13 @@ export function RoomPlayPage() {
   });
 
   const startErrorCode = startMutation.error instanceof Error ? startMutation.error.message : null;
-  const sourceErrorCode = sourceMutation.error instanceof Error ? sourceMutation.error.message : null;
+  const sourceModeErrorCode = sourceModeMutation.error instanceof Error ? sourceModeMutation.error.message : null;
+  const publicPlaylistErrorCode =
+    publicPlaylistMutation.error instanceof Error ? publicPlaylistMutation.error.message : null;
+  const contributionErrorCode =
+    contributionMutation.error instanceof Error ? contributionMutation.error.message : null;
+  const refreshLinksErrorCode =
+    refreshLinksMutation.error instanceof Error ? refreshLinksMutation.error.message : null;
   const readyErrorCode = readyMutation.error instanceof Error ? readyMutation.error.message : null;
   const kickErrorCode = kickMutation.error instanceof Error ? kickMutation.error.message : null;
   const replayErrorCode = replayMutation.error instanceof Error ? replayMutation.error.message : null;
@@ -552,9 +619,32 @@ export function RoomPlayPage() {
     answerMutation.mutate(choice);
   }
 
-  function onApplyAniList() {
-    if (!aniListUsers.trim()) return;
-    sourceMutation.mutate(`anilist:users:${aniListUsers.trim()}`);
+  async function onConnectProvider(provider: "spotify" | "deezer") {
+    try {
+      const payload = await getMusicProviderConnectUrl({
+        provider,
+        returnTo: `/room/${roomCode}/play`,
+      });
+      if (typeof window !== "undefined") {
+        window.open(payload.authorizeUrl, "tunaris-music-oauth", "width=640,height=760");
+      }
+    } catch {
+      // Keep lobby interactive even when provider OAuth is temporarily unavailable.
+    }
+  }
+
+  async function onDisconnectProvider(provider: "spotify" | "deezer") {
+    try {
+      await disconnectMusicProvider({ provider });
+      refreshLinksMutation.mutate();
+    } catch {
+      // Ignore transient disconnect failures in lobby controls.
+    }
+  }
+
+  function onSelectSourceMode(mode: SourceMode) {
+    setSourceMode(mode);
+    sourceModeMutation.mutate(mode);
   }
 
   async function leaveRoom() {
@@ -633,30 +723,30 @@ export function RoomPlayPage() {
 
               {isHost ? (
                 <div className="field-block">
-                  <span className="field-label">Sélection source (host)</span>
+                  <span className="field-label">Mode de jeu (host)</span>
                   <div className="source-preset-grid">
                     <button
                       type="button"
-                      className={`source-preset-btn${sourceMode === "playlist" ? " active" : ""}`}
-                      onClick={() => setSourceMode("playlist")}
+                      className={`source-preset-btn${sourceMode === "public_playlist" ? " active" : ""}`}
+                      onClick={() => onSelectSourceMode("public_playlist")}
                     >
-                      <strong>Playlists musique</strong>
-                      <span>Catalogue multi-plateformes</span>
+                      <strong>Playlist publique</strong>
+                      <span>Recherche publique Deezer</span>
                     </button>
                     <button
                       type="button"
-                      className={`source-preset-btn${sourceMode === "anilist" ? " active" : ""}`}
-                      onClick={() => setSourceMode("anilist")}
+                      className={`source-preset-btn${sourceMode === "players_liked" ? " active" : ""}`}
+                      onClick={() => onSelectSourceMode("players_liked")}
                     >
-                      <strong>AniList anime</strong>
-                      <span>Openings/endings</span>
+                      <strong>Liked Songs joueurs</strong>
+                      <span>Pool collaboratif des joueurs</span>
                     </button>
                   </div>
 
-                  {sourceMode === "playlist" && (
+                  {sourceMode === "public_playlist" && (
                     <>
                       <div className="playlist-search-shell">
-                        <p className="playlist-search-kicker">Recherche playlist</p>
+                        <p className="playlist-search-kicker">Recherche playlist Deezer</p>
                         <div className="playlist-search-input-wrap">
                           <input
                             id="playlist-search-input"
@@ -697,9 +787,9 @@ export function RoomPlayPage() {
                           <button
                             key={`${playlist.provider}:${playlist.id}`}
                             type="button"
-                            className={`playlist-card-btn${state.categoryQuery === playlist.sourceQuery ? " active" : ""}`}
-                            onClick={() => sourceMutation.mutate(playlist.sourceQuery)}
-                            disabled={sourceMutation.isPending}
+                            className={`playlist-card-btn${state.sourceConfig.publicPlaylist?.sourceQuery === playlist.sourceQuery ? " active" : ""}`}
+                            onClick={() => publicPlaylistMutation.mutate(playlist)}
+                            disabled={publicPlaylistMutation.isPending}
                           >
                             {playlist.imageUrl ? (
                               <img src={playlist.imageUrl} alt={playlist.name} loading="lazy" />
@@ -709,9 +799,7 @@ export function RoomPlayPage() {
                             <div>
                               <strong>{playlistDisplayName(playlist.name)}</strong>
                               <p>{playlistSecondaryLabel(playlist)}</p>
-                              <small>
-                                {formatTrackCountLabel(playlist.trackCount)}
-                              </small>
+                              <small>{formatTrackCountLabel(playlist.trackCount)}</small>
                             </div>
                           </button>
                         ))}
@@ -719,26 +807,77 @@ export function RoomPlayPage() {
                     </>
                   )}
 
-                  {sourceMode === "anilist" && (
+                  {sourceMode === "players_liked" && (
                     <div className="panel-form">
-                      <label>
-                        <span>AniList users (csv)</span>
-                        <input
-                          value={aniListUsers}
-                          onChange={(event) => setAniListUsers(event.currentTarget.value)}
-                          maxLength={160}
-                          placeholder="userA,userB,userC"
-                        />
-                      </label>
-                      <button className="ghost-btn" type="button" onClick={onApplyAniList}>
-                        Appliquer AniList
-                      </button>
+                      <p className="status">
+                        Les joueurs connectés peuvent contribuer Spotify et/ou Deezer.
+                      </p>
+                      <p className="status">
+                        Contributeurs actifs: {state.poolBuild.contributorsCount} | Pistes prêtes: {state.poolBuild.playableTracksCount}
+                      </p>
                     </div>
                   )}
                 </div>
               ) : (
-                <p className="status">Seul le host peut choisir la playlist.</p>
+                <p className="status">Seul le host peut changer le mode source.</p>
               )}
+
+              <div className="field-block">
+                <span className="field-label">Ta contribution bibliothèque</span>
+                {!currentPlayer?.canContributeLibrary && (
+                  <p className="status">Tu es en mode invité. Connecte-toi pour contribuer tes liked songs.</p>
+                )}
+                {currentPlayer?.canContributeLibrary && (
+                  <div className="panel-form">
+                    <button
+                      className="ghost-btn"
+                      type="button"
+                      disabled={refreshLinksMutation.isPending}
+                      onClick={() => refreshLinksMutation.mutate()}
+                    >
+                      {refreshLinksMutation.isPending ? "Rafraîchissement..." : "Rafraîchir mes liens"}
+                    </button>
+                    {(["spotify", "deezer"] as const).map((provider) => {
+                      const linked = currentPlayer.libraryContribution.linkedProviders[provider];
+                      const included = currentPlayer.libraryContribution.includeInPool[provider];
+                      return (
+                        <div key={provider} className="waiting-actions">
+                          <p className="status">
+                            {provider === "spotify" ? "Spotify" : "Deezer"}: {linked}
+                          </p>
+                          {linked === "linked" ? (
+                            <>
+                              <button
+                                className={`ghost-btn${included ? " selected" : ""}`}
+                                type="button"
+                                disabled={contributionMutation.isPending}
+                                onClick={() =>
+                                  contributionMutation.mutate({
+                                    provider,
+                                    includeInPool: !included,
+                                  })}
+                              >
+                                {included ? "Retirer du pool" : "Inclure dans le pool"}
+                              </button>
+                              <button
+                                className="ghost-btn"
+                                type="button"
+                                onClick={() => onDisconnectProvider(provider)}
+                              >
+                                Déconnecter
+                              </button>
+                            </>
+                          ) : (
+                            <button className="ghost-btn" type="button" onClick={() => onConnectProvider(provider)}>
+                              Connecter {provider === "spotify" ? "Spotify" : "Deezer"}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
 
               <div className="waiting-actions">
                 <button
@@ -753,13 +892,9 @@ export function RoomPlayPage() {
                   <button
                     className="solid-btn"
                     onClick={() => startMutation.mutate()}
-                    disabled={startMutation.isPending || !state.canStart || spotifyCooldownRemainingMs > 0}
+                    disabled={startMutation.isPending || !state.canStart}
                   >
-                    {startMutation.isPending
-                      ? "Lancement..."
-                      : spotifyCooldownRemainingMs > 0
-                        ? `Spotify en pause (${spotifyCooldownRemainingSec}s)`
-                        : "Lancer la partie"}
+                    {startMutation.isPending ? "Lancement..." : "Lancer la partie"}
                   </button>
                 )}
                 <Link className="ghost-btn" to="/room/$roomCode/view" params={{ roomCode }}>
@@ -777,6 +912,13 @@ export function RoomPlayPage() {
                       <strong>{player.displayName}</strong>
                       <p>
                         {player.isHost ? "Host" : "Joueur"} - {player.isReady ? "Prêt" : "En attente"}
+                      </p>
+                      <p>
+                        Spotify: {player.libraryContribution.linkedProviders.spotify}
+                        {player.libraryContribution.includeInPool.spotify ? " (opt-in)" : ""}
+                        {" | "}
+                        Deezer: {player.libraryContribution.linkedProviders.deezer}
+                        {player.libraryContribution.includeInPool.deezer ? " (opt-in)" : ""}
                       </p>
                     </div>
                     {isHost && player.playerId !== session.playerId && (
@@ -902,7 +1044,10 @@ export function RoomPlayPage() {
               snapshotQuery.isError ||
               answerMutation.isError ||
               startMutation.isError ||
-              sourceMutation.isError ||
+              sourceModeMutation.isError ||
+              publicPlaylistMutation.isError ||
+              contributionMutation.isError ||
+              refreshLinksMutation.isError ||
               readyMutation.isError ||
               kickMutation.isError ||
               replayMutation.isError ||
@@ -916,9 +1061,18 @@ export function RoomPlayPage() {
             {startErrorCode === "SPOTIFY_RATE_LIMITED" &&
               `Spotify limite temporairement les requêtes. Réessaye dans ${spotifyCooldownRemainingSec}s.`}
             {startErrorCode === "SOURCE_NOT_SET" && "Le host doit choisir une playlist avant de lancer."}
+            {startErrorCode === "PLAYERS_LIBRARY_NOT_READY" &&
+              "Le mode Liked Songs nécessite des joueurs connectés et opt-in."}
+            {startErrorCode === "PLAYERS_LIBRARY_SYNCING" &&
+              "Synchronisation des bibliothèques en cours. Réessaie dans quelques secondes."}
             {startErrorCode === "PLAYERS_NOT_READY" && "Tous les joueurs doivent être prêts."}
             {startErrorCode === "HOST_ONLY" && "Seul le host peut lancer la partie."}
-            {sourceErrorCode === "HOST_ONLY" && "Seul le host peut choisir la playlist."}
+            {sourceModeErrorCode === "HOST_ONLY" && "Seul le host peut changer le mode source."}
+            {publicPlaylistErrorCode === "HOST_ONLY" && "Seul le host peut choisir la playlist publique."}
+            {contributionErrorCode === "INVALID_STATE" && "L’opt-in bibliothèque est disponible uniquement dans le lobby."}
+            {contributionErrorCode === "UNAUTHORIZED" && "Connecte ton compte Tunaris pour contribuer ta bibliothèque."}
+            {contributionErrorCode === "FORBIDDEN" && "Connecte ton compte Tunaris pour contribuer ta bibliothèque."}
+            {refreshLinksErrorCode === "UNAUTHORIZED" && "Connecte ton compte Tunaris pour lier Spotify/Deezer."}
             {readyErrorCode === "INVALID_STATE" && "Le statut prêt se gère uniquement dans le lobby."}
             {kickErrorCode === "HOST_ONLY" && "Seul le host peut éjecter un joueur."}
             {replayErrorCode === "HOST_ONLY" && "Seul le host peut relancer une partie."}

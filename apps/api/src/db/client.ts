@@ -7,6 +7,14 @@ export const DOMAIN_TABLES = [
   "rounds",
   "round_submissions",
   "provider_tracks",
+  "music_account_links",
+] as const;
+
+export const AUTH_TABLES = [
+  "user",
+  "session",
+  "account",
+  "verification",
 ] as const;
 
 export const pool = new Pool({
