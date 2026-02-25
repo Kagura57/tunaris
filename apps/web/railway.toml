@@ -2,6 +2,10 @@
 builder = "NIXPACKS"
 buildCommand = "if [ -d apps/web ]; then cd apps/web; fi && bun install && bun run build"
 
+[variables]
+NIXPACKS_NODE_VERSION = "22"
+RAILPACK_NODE_VERSION = "22"
+
 [deploy]
 startCommand = "if [ -d apps/web ]; then cd apps/web; fi && bun run start"
 restartPolicyType = "ON_FAILURE"

@@ -72,6 +72,7 @@ Important:
 Dans le service `web`:
 
 - Build/start command: pris depuis `apps/web/railway.toml`
+- `apps/web/railway.toml` force Node 22 pour le build (`NIXPACKS_NODE_VERSION` / `RAILPACK_NODE_VERSION`)
 
 Variables à définir:
 
