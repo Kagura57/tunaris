@@ -17,7 +17,15 @@ import { startSpotifySyncWorker } from "./services/jobs/spotify-sync-worker";
 import { roomStore } from "./services/RoomStore";
 import { trackCache } from "./services/TrackCache";
 
-const API_PORT = 3001;
+const DEFAULT_API_PORT = 3001;
+
+function readApiPort() {
+  const raw = process.env.PORT;
+  if (!raw) return DEFAULT_API_PORT;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_API_PORT;
+  return parsed;
+}
 
 function resolveStatus(status: unknown) {
   if (typeof status === "number") return status;
@@ -121,7 +129,11 @@ export const app = new Elysia()
   );
 
 if (import.meta.main) {
-  app.listen(API_PORT);
+  const apiPort = readApiPort();
+  app.listen({
+    hostname: "0.0.0.0",
+    port: apiPort,
+  });
   startSpotifySyncWorker();
-  console.log(`Tunaris API running on http://127.0.0.1:${API_PORT}`);
+  console.log(`Tunaris API running on http://0.0.0.0:${apiPort}`);
 }

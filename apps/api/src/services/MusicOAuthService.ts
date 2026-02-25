@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 import { fetchJsonWithTimeout } from "../routes/music/http";
 import { logEvent } from "../lib/logger";
 import { musicAccountRepository, type MusicProvider } from "../repositories/MusicAccountRepository";
+import { queueSpotifySyncForUser } from "./jobs/spotify-sync-trigger";
 
 type PendingOAuthState = {
   userId: string;
@@ -272,6 +273,9 @@ export async function handleMusicOAuthCallback(input: {
     userId: pending.userId,
     providerUserId: tokenPayload.providerUserId,
   });
+  if (input.provider === "spotify") {
+    await queueSpotifySyncForUser(pending.userId);
+  }
   return {
     ok: true as const,
     returnTo: pending.returnTo,

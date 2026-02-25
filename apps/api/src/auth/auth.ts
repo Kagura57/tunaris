@@ -1,5 +1,6 @@
 import { betterAuth } from "better-auth";
 import { pool } from "../db/client";
+import { queueSpotifySyncForAccountLink } from "../services/jobs/spotify-sync-trigger";
 
 const FALLBACK_SECRET = "tunaris-dev-secret-change-this-in-production-1234";
 
@@ -37,5 +38,14 @@ export const auth = betterAuth({
   trustedOrigins: readTrustedOrigins(),
   emailAndPassword: {
     enabled: true,
+  },
+  databaseHooks: {
+    account: {
+      create: {
+        after: async (account) => {
+          await queueSpotifySyncForAccountLink(account);
+        },
+      },
+    },
   },
 });

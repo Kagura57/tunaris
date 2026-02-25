@@ -12,6 +12,13 @@ export type SpotifySyncJobPayload = {
 let redisConnection: IORedis | null = null;
 let spotifySyncQueue: Queue<SpotifySyncJobPayload> | null = null;
 
+export function buildSpotifySyncJobId(userId: string) {
+  const normalized = userId.trim();
+  if (!normalized) return "spotify-sync-unknown";
+  const safe = normalized.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return `spotify-sync-${safe}`;
+}
+
 function getRedisConnection() {
   const redisUrl = readRedisUrl();
   if (!redisUrl) return null;
@@ -52,12 +59,24 @@ export async function enqueueSpotifyLibrarySyncJob(userId: string) {
   if (!queue) return null;
   const normalizedUserId = userId.trim();
   if (!normalizedUserId) return null;
+  const jobId = buildSpotifySyncJobId(normalizedUserId);
+
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (state === "waiting" || state === "active" || state === "delayed" || state === "paused") {
+      return existing;
+    }
+    if (state === "completed" || state === "failed") {
+      await existing.remove();
+    }
+  }
 
   return await queue.add(
     SPOTIFY_SYNC_JOB_NAME,
     { userId: normalizedUserId },
     {
-      jobId: `spotify-sync:${normalizedUserId}`,
+      jobId,
     },
   );
 }

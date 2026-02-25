@@ -1,61 +1,38 @@
 import { Elysia } from "elysia";
 import { readSessionFromHeaders } from "../../auth/client";
-import { enqueueSpotifyLibrarySyncJob, isSpotifySyncQueueConfigured } from "../../services/jobs/spotify-sync-queue";
+import { queueSpotifySyncForUser } from "../../services/jobs/spotify-sync-trigger";
 import { userLibrarySyncRepository } from "../../repositories/UserLibrarySyncRepository";
 
-export const musicLibraryRoutes = new Elysia({ prefix: "/api/music/library" })
-  .post("/sync", async ({ headers, set }) => {
+async function queueLibrarySync({ headers, set }: { headers: unknown; set: { status: number } }) {
     const authContext = await readSessionFromHeaders(headers as unknown as Headers);
     if (!authContext?.user?.id) {
       set.status = 401;
       return { ok: false as const, error: "UNAUTHORIZED" };
     }
 
-    if (!isSpotifySyncQueueConfigured()) {
-      set.status = 503;
-      return {
-        ok: false as const,
-        error: "SYNC_QUEUE_UNAVAILABLE",
-      };
-    }
-
     const userId = authContext.user.id;
-    await userLibrarySyncRepository.upsert({
-      userId,
-      status: "syncing",
-      progress: 0,
-      totalTracks: 0,
-      lastError: null,
-      startedAtMs: Date.now(),
-      completedAtMs: null,
-    });
-
-    const job = await enqueueSpotifyLibrarySyncJob(userId);
-    if (!job) {
+    const enqueueResult = await queueSpotifySyncForUser(userId);
+    if (!enqueueResult.queued) {
       set.status = 503;
-      await userLibrarySyncRepository.upsert({
-        userId,
-        status: "error",
-        progress: 0,
-        totalTracks: 0,
-        lastError: "SYNC_QUEUE_UNAVAILABLE",
-        startedAtMs: Date.now(),
-        completedAtMs: null,
-      });
       return {
         ok: false as const,
-        error: "SYNC_QUEUE_UNAVAILABLE",
+        error: enqueueResult.reason,
+        code: "SYNC_QUEUE_UNAVAILABLE" as const,
+        reason: enqueueResult.reason,
       };
     }
 
     set.status = 202;
     return {
       ok: true as const,
+      message: "Sync job queued" as const,
       status: "accepted" as const,
-      jobId: job.id ?? null,
+      mode: enqueueResult.mode,
+      jobId: enqueueResult.jobId,
     };
-  })
-  .get("/sync/status", async ({ headers, set }) => {
+}
+
+async function getLibrarySyncStatus({ headers, set }: { headers: unknown; set: { status: number } }) {
     const authContext = await readSessionFromHeaders(headers as unknown as Headers);
     if (!authContext?.user?.id) {
       set.status = 401;
@@ -74,4 +51,14 @@ export const musicLibraryRoutes = new Elysia({ prefix: "/api/music/library" })
       completedAtMs: state.completedAtMs,
       updatedAtMs: state.updatedAtMs,
     };
-  });
+}
+
+function buildLibraryRoutes(prefix: string) {
+  return new Elysia({ prefix })
+    .post("/sync", queueLibrarySync)
+    .get("/sync/status", getLibrarySyncStatus);
+}
+
+export const musicLibraryRoutes = new Elysia()
+  .use(buildLibraryRoutes("/music/library"))
+  .use(buildLibraryRoutes("/api/music/library"));

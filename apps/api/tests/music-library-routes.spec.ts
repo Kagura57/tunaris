@@ -108,4 +108,49 @@ describe("music library sync routes", () => {
     expect(payload.progress).toBe(42);
     expect(payload.totalTracks).toBe(1200);
   });
+
+  it("returns 503 with enqueue reason when enqueue throws unexpectedly", async () => {
+    vi.spyOn(authClientModule, "readSessionFromHeaders").mockResolvedValue({
+      session: {
+        id: "session-1",
+        userId: "user-1",
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+      user: {
+        id: "user-1",
+        name: "User One",
+        email: "user@example.com",
+      },
+    });
+    vi.spyOn(queueModule, "isSpotifySyncQueueConfigured").mockReturnValue(true);
+    vi.spyOn(queueModule, "enqueueSpotifyLibrarySyncJob").mockRejectedValue(new Error("ECONNREFUSED_REDIS"));
+    vi.spyOn(syncRepoModule.userLibrarySyncRepository, "upsert").mockResolvedValue({
+      userId: "user-1",
+      status: "error",
+      progress: 0,
+      totalTracks: 0,
+      lastError: "SYNC_QUEUE_UNAVAILABLE",
+      startedAtMs: Date.now(),
+      completedAtMs: null,
+      updatedAtMs: Date.now(),
+    });
+
+    const response = await app.handle(
+      new Request("http://localhost/api/music/library/sync", {
+        method: "POST",
+      }),
+    );
+
+    expect(response.status).toBe(503);
+    const payload = (await response.json()) as {
+      ok: boolean;
+      error: string;
+      code: string;
+      reason: string;
+    };
+    expect(payload.ok).toBe(false);
+    expect(payload.error.startsWith("ENQUEUE_EXCEPTION:")).toBe(true);
+    expect(payload.code).toBe("SYNC_QUEUE_UNAVAILABLE");
+    expect(payload.reason.startsWith("ENQUEUE_EXCEPTION:")).toBe(true);
+  });
 });

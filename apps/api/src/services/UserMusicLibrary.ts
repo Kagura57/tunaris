@@ -573,12 +573,13 @@ export async function fetchUserLikedTracksForProviders(input: {
   providers: MusicProvider[];
   size: number;
 }) {
+  const userId = input.userId.trim();
   const safeSize = Math.max(1, Math.min(input.size, 120));
   const providers = input.providers.filter(
     (provider): provider is LibraryProvider => provider === "spotify" || provider === "deezer",
   );
   const merged = await buildSyncedUserLibraryTrackPool({
-    userId: input.userId,
+    userId,
     providers,
     size: Math.max(30, safeSize * 3),
   });

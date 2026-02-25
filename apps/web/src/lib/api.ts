@@ -657,6 +657,31 @@ export async function disconnectMusicProvider(input: { provider: "spotify" | "de
   });
 }
 
+export async function queueMySpotifyLibrarySync() {
+  return requestJson<{
+    ok: true;
+    message: string;
+    status: "accepted";
+    jobId: string | null;
+  }>("/music/library/sync", {
+    method: "POST",
+  });
+}
+
+export async function getMySpotifyLibrarySyncStatus() {
+  return requestJson<{
+    ok: true;
+    userId: string;
+    status: "idle" | "syncing" | "completed" | "error";
+    progress: number;
+    totalTracks: number;
+    lastError: string | null;
+    startedAtMs: number | null;
+    completedAtMs: number | null;
+    updatedAtMs: number;
+  }>("/music/library/sync/status");
+}
+
 export async function getMyLikedTracks(input: { provider: "spotify" | "deezer"; limit?: number }) {
   const params = new URLSearchParams();
   if (typeof input.limit === "number") params.set("limit", String(input.limit));

@@ -173,6 +173,8 @@ alter table user_liked_tracks alter column provider set default 'spotify';
 alter table user_liked_tracks alter column provider set not null;
 
 do $$
+declare
+  id_pk_name text;
 begin
   if exists (
     select 1
@@ -181,6 +183,21 @@ begin
       and table_name = 'user_liked_tracks'
       and column_name = 'id'
   ) then
+    select con.conname
+      into id_pk_name
+    from pg_constraint con
+    join pg_attribute att
+      on att.attrelid = con.conrelid
+     and att.attnum = any(con.conkey)
+    where con.conrelid = 'user_liked_tracks'::regclass
+      and con.contype = 'p'
+      and att.attname = 'id'
+    limit 1;
+
+    if id_pk_name is not null then
+      execute format('alter table user_liked_tracks drop constraint %I', id_pk_name);
+    end if;
+
     begin
       alter table user_liked_tracks drop column id;
     exception when undefined_column then
@@ -191,8 +208,36 @@ end $$;
 
 alter table user_liked_tracks
   drop constraint if exists user_liked_tracks_user_id_provider_source_id_key;
-alter table user_liked_tracks
-  add constraint user_liked_tracks_user_source_pk primary key (user_id, source_id);
+
+do $$
+declare
+  pk_name text;
+  pk_columns text[];
+begin
+  select con.conname,
+         array_agg(att.attname order by keys.ordinality)
+    into pk_name, pk_columns
+  from pg_constraint con
+  join unnest(con.conkey) with ordinality as keys(attnum, ordinality)
+    on true
+  join pg_attribute att
+    on att.attrelid = con.conrelid
+   and att.attnum = keys.attnum
+  where con.conrelid = 'user_liked_tracks'::regclass
+    and con.contype = 'p'
+  group by con.conname
+  limit 1;
+
+  if pk_name is null then
+    alter table user_liked_tracks
+      add constraint user_liked_tracks_user_source_pk primary key (user_id, source_id);
+  elsif pk_columns <> array['user_id', 'source_id'] then
+    execute format('alter table user_liked_tracks drop constraint %I', pk_name);
+    alter table user_liked_tracks
+      add constraint user_liked_tracks_user_source_pk primary key (user_id, source_id);
+  end if;
+end $$;
+
 alter table user_liked_tracks
   drop constraint if exists user_liked_tracks_source_id_fkey;
 alter table user_liked_tracks

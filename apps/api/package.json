@@ -3,7 +3,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun --env-file=../../.env --hot src/index.ts",
-    "start": "bun --env-file=../../.env src/index.ts",
+    "start": "bun src/index.ts",
     "db:migrate": "bun --env-file=../../.env src/db/migrate.ts"
   },
   "dependencies": {

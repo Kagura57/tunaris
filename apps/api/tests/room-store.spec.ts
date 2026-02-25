@@ -630,6 +630,89 @@ describe("RoomStore gameplay progression", () => {
     });
   });
 
+  it("keeps canStart true in players_liked waiting state when a linked contributor exists", async () => {
+    const store = new RoomStore({
+      getPlayerLikedTracks: async () => [],
+      config: {
+        maxRounds: 10,
+      },
+    });
+
+    const created = store.createRoom();
+    const host = store.joinRoomAsUser(
+      created.roomCode,
+      "Host",
+      "user-host",
+      { spotify: { status: "linked", estimatedTrackCount: 120 } },
+    );
+    if ("status" in host) return;
+
+    const modeSet = store.setRoomSourceMode(created.roomCode, host.playerId, "players_liked");
+    expect(modeSet.status).toBe("ok");
+    const ready = store.setPlayerReady(created.roomCode, host.playerId, true);
+    expect(ready.status).toBe("ok");
+
+    let snapshot = store.roomState(created.roomCode);
+    for (let attempt = 0; attempt < 30 && snapshot?.isResolvingTracks; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      snapshot = store.roomState(created.roomCode);
+    }
+
+    expect(snapshot?.isResolvingTracks).toBe(false);
+    expect(snapshot?.poolBuild.status).toBe("failed");
+    expect(snapshot?.canStart).toBe(true);
+  });
+
+  it("replay keeps linked providers enabled for players_liked mode", async () => {
+    const likedTracks: MusicTrack[] = Array.from({ length: 12 }, (_, index) => ({
+      provider: "youtube",
+      id: `replay-liked-${index + 1}`,
+      title: `Replay Liked ${index + 1}`,
+      artist: `Replay Artist ${index + 1}`,
+      previewUrl: null,
+      sourceUrl: `https://www.youtube.com/watch?v=replay-liked-${index + 1}`,
+    }));
+
+    let nowMs = 0;
+    const store = new RoomStore({
+      now: () => nowMs,
+      getPlayerLikedTracks: async () => likedTracks,
+      config: {
+        maxRounds: 2,
+        countdownMs: 5,
+        playingMs: 20,
+        revealMs: 5,
+        leaderboardMs: 5,
+      },
+    });
+
+    const created = store.createRoom();
+    const host = store.joinRoomAsUser(
+      created.roomCode,
+      "Host",
+      "user-host",
+      { spotify: { status: "linked", estimatedTrackCount: 120 } },
+    );
+    if ("status" in host) return;
+
+    store.setRoomSourceMode(created.roomCode, host.playerId, "players_liked");
+    store.setPlayerReady(created.roomCode, host.playerId, true);
+    const started = await store.startGame(created.roomCode, host.playerId);
+    expect(started).toMatchObject({ ok: true });
+
+    for (let step = 0; step < 20; step += 1) {
+      nowMs += 30;
+      const snapshot = store.roomState(created.roomCode);
+      if (snapshot?.state === "results") break;
+    }
+
+    const replay = store.replayRoom(created.roomCode, host.playerId);
+    expect(replay.status).toBe("ok");
+
+    const lobby = store.roomState(created.roomCode);
+    expect(lobby?.players[0]?.libraryContribution.includeInPool.spotify).toBe(true);
+  });
+
   it("exposes resolving state and updates merged/playable counts after players_liked sync", async () => {
     const likedTracks: MusicTrack[] = Array.from({ length: 12 }, (_, index) => ({
       provider: "youtube",

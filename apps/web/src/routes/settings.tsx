@@ -4,8 +4,10 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import {
   disconnectMusicProvider,
   getAuthSession,
+  getMySpotifyLibrarySyncStatus,
   getMusicProviderConnectUrl,
   getMusicProviderLinks,
+  queueMySpotifyLibrarySync,
   signOutAccount,
 } from "../lib/api";
 import { useGameStore } from "../stores/gameStore";
@@ -47,6 +49,18 @@ export function SettingsPage() {
     enabled: Boolean(sessionQuery.data?.user),
   });
 
+  const spotifyLinked = providerLinksQuery.data?.providers?.spotify?.status === "linked";
+
+  const librarySyncStatusQuery = useQuery({
+    queryKey: ["music-library-sync-status"],
+    queryFn: getMySpotifyLibrarySyncStatus,
+    enabled: Boolean(sessionQuery.data?.user) && spotifyLinked,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "syncing" ? 2_000 : false;
+    },
+  });
+
   useEffect(() => {
     function onMessage(event: MessageEvent) {
       const payload = event.data as { source?: string; ok?: boolean } | null;
@@ -78,6 +92,14 @@ export function SettingsPage() {
     mutationFn: async (provider: LinkableProvider) => disconnectMusicProvider({ provider }),
     onSuccess: async () => {
       await providerLinksQuery.refetch();
+      await librarySyncStatusQuery.refetch();
+    },
+  });
+
+  const librarySyncMutation = useMutation({
+    mutationFn: queueMySpotifyLibrarySync,
+    onSuccess: async () => {
+      await librarySyncStatusQuery.refetch();
     },
   });
 
@@ -134,7 +156,10 @@ export function SettingsPage() {
 
             {(["spotify", "deezer"] as const).map((provider) => {
               const status = providerLinksQuery.data?.providers?.[provider]?.status ?? "not_linked";
-              const busy = connectMutation.isPending || disconnectMutation.isPending;
+              const busy =
+                connectMutation.isPending ||
+                disconnectMutation.isPending ||
+                librarySyncMutation.isPending;
               return (
                 <div key={provider} className="waiting-actions">
                   <p className="status">
@@ -163,11 +188,35 @@ export function SettingsPage() {
               );
             })}
 
+            {spotifyLinked && (
+              <div className="waiting-actions">
+                <button
+                  className="solid-btn"
+                  type="button"
+                  disabled={librarySyncMutation.isPending}
+                  onClick={() => librarySyncMutation.mutate()}
+                >
+                  {librarySyncMutation.isPending
+                    ? "Synchronisation..."
+                    : "Synchroniser mes titres likés Spotify"}
+                </button>
+                <p className="status">
+                  État sync: <strong>{librarySyncStatusQuery.data?.status ?? "idle"}</strong>
+                  {typeof librarySyncStatusQuery.data?.progress === "number"
+                    ? ` (${librarySyncStatusQuery.data.progress}%)`
+                    : ""}
+                  {typeof librarySyncStatusQuery.data?.totalTracks === "number"
+                    ? ` · ${librarySyncStatusQuery.data.totalTracks} titres`
+                    : ""}
+                </p>
+              </div>
+            )}
+
             <div className="waiting-actions">
               <button
                 className="ghost-btn"
                 type="button"
-                disabled={signOutMutation.isPending}
+                disabled={signOutMutation.isPending || librarySyncMutation.isPending}
                 onClick={() => signOutMutation.mutate()}
               >
                 {signOutMutation.isPending ? "Déconnexion..." : "Se déconnecter"}
@@ -179,10 +228,25 @@ export function SettingsPage() {
           </div>
         )}
 
-        <p className={(connectMutation.isError || disconnectMutation.isError || signOutMutation.isError) ? "status error" : "status"}>
+        <p
+          className={
+            (connectMutation.isError ||
+            disconnectMutation.isError ||
+            signOutMutation.isError ||
+            librarySyncMutation.isError ||
+            librarySyncStatusQuery.data?.status === "error")
+              ? "status error"
+              : "status"
+          }
+        >
           {connectMutation.isError && "Impossible de lancer la connexion OAuth."}
           {disconnectMutation.isError && "Impossible de déconnecter ce provider."}
           {signOutMutation.isError && "Déconnexion impossible pour le moment."}
+          {librarySyncMutation.isError && "Impossible de lancer la synchronisation Spotify."}
+          {!librarySyncMutation.isError && librarySyncMutation.isSuccess && "Sync Spotify mise en file d'attente."}
+          {!librarySyncMutation.isError &&
+            librarySyncStatusQuery.data?.status === "error" &&
+            `Erreur sync Spotify: ${librarySyncStatusQuery.data.lastError ?? "UNKNOWN_ERROR"}`}
         </p>
       </article>
     </section>

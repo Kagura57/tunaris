@@ -104,6 +104,7 @@ const DEFAULT_ROUND_CONFIG = {
 const TRACK_POOL_TARGET_MULTIPLIER = 5;
 const TRACK_POOL_MIN_CANDIDATES = 24;
 const TRACK_POOL_MAX_CANDIDATES = 100;
+const PLAYERS_LIKED_REBUILD_COOLDOWN_MS = 15_000;
 
 type RoundConfig = typeof DEFAULT_ROUND_CONFIG;
 
@@ -326,8 +327,6 @@ export class RoomStore {
       return this.sourceQueryForSession(session).length > 0;
     }
 
-    if (session.poolBuild.status !== "ready") return false;
-    if (session.poolBuild.playableTracksCount < session.playersLikedRules.minTotalTracks) return false;
     const contributors = this.playersLikedContributors(session);
     return contributors.length >= session.playersLikedRules.minContributors;
   }
@@ -537,13 +536,6 @@ export class RoomStore {
         20_000,
         "PLAYERS_LIBRARY_TIMEOUT",
       );
-      console.log("[players-liked-debug] contributor_fetch", {
-        roomCode: session.roomCode,
-        contributorPlayerId: contributor.id,
-        contributorUserId: contributor.userId,
-        providers,
-        fetchedCount: fetched.length,
-      });
       fetchedTotal += fetched.length;
 
       for (const track of fetched) {
@@ -557,17 +549,6 @@ export class RoomStore {
     }
 
     const split = this.splitAnswerAndDistractorPools(mergedTracks, safeRounds);
-    console.log("[players-liked-debug] build_pool_done", {
-      roomCode: session.roomCode,
-      requestedRounds: safeRounds,
-      targetCandidateSize,
-      contributorsCount: contributors.length,
-      fetchedTotal,
-      mergedTracksCount: mergedTracks.length,
-      answersCount: split.tracks.length,
-      distractorCount: split.distractorTracks.length,
-      candidateCount: split.candidateCount,
-    });
     return {
       tracks: split.tracks,
       distractorTracks: split.distractorTracks,
@@ -835,7 +816,7 @@ export class RoomStore {
       publicPlaylistSelection: null,
       playersLikedRules: {
         minContributors: 1,
-        minTotalTracks: Math.max(1, this.config.maxRounds),
+        minTotalTracks: 1,
       },
       playersLikedPool: [],
       poolBuild: {
@@ -930,6 +911,7 @@ export class RoomStore {
             typeof entry.estimatedTrackCount === "number" && Number.isFinite(entry.estimatedTrackCount)
               ? Math.max(0, Math.floor(entry.estimatedTrackCount))
               : null;
+          player.library.includeInPool[provider] = player.library.linkedProviders[provider] === "linked";
         }
         player.library.syncStatus = "ready";
       }
@@ -1015,6 +997,13 @@ export class RoomStore {
     } else {
       session.publicPlaylistSelection = null;
       session.categoryQuery = "players:liked";
+      for (const player of session.players.values()) {
+        for (const provider of ["spotify", "deezer"] as const) {
+          if (player.library.linkedProviders[provider] === "linked") {
+            player.library.includeInPool[provider] = true;
+          }
+        }
+      }
       this.startPlayersLikedPoolBuild(session);
     }
     this.resetReadyStates(session);
@@ -1122,6 +1111,8 @@ export class RoomStore {
           : null;
       if (player.library.linkedProviders[provider] !== "linked") {
         player.library.includeInPool[provider] = false;
+      } else {
+        player.library.includeInPool[provider] = true;
       }
     }
 
@@ -1235,8 +1226,8 @@ export class RoomStore {
       player.maxStreak = 0;
       player.totalResponseMs = 0;
       player.correctAnswers = 0;
-      player.library.includeInPool.spotify = false;
-      player.library.includeInPool.deezer = false;
+      player.library.includeInPool.spotify = player.library.linkedProviders.spotify === "linked";
+      player.library.includeInPool.deezer = player.library.linkedProviders.deezer === "linked";
     }
 
     return {
@@ -1403,7 +1394,7 @@ export class RoomStore {
     session.latestReveal = null;
     this.refreshRoundPlan(session);
 
-    if (session.totalRounds < poolSize || session.trackPool.length < poolSize) {
+    if (session.totalRounds <= 0 || session.trackPool.length <= 0) {
       if (
         session.sourceMode === "public_playlist" &&
         resolvedQuery.toLowerCase().startsWith("spotify:") &&
@@ -1419,12 +1410,12 @@ export class RoomStore {
       logEvent("warn", "room_start_no_tracks", {
         roomCode,
         categoryQuery: resolvedQuery,
-        reason: session.trackPool.length <= 0 ? "EMPTY_POOL" : "INSUFFICIENT_POOL",
+        reason: "EMPTY_POOL",
         requestedPoolSize: poolSize,
         selectedPoolSize: session.trackPool.length,
         distractorPoolSize: session.distractorTrackPool.length,
         candidatePoolSize: startPoolStats.candidateCount,
-        missingTracks: Math.max(0, poolSize - session.trackPool.length),
+        missingTracks: 0,
         preparedRounds: session.totalRounds,
         rawTrackPoolSize: startPoolStats.rawTotal,
         playablePoolSize: startPoolStats.playableTotal,
@@ -1545,6 +1536,23 @@ export class RoomStore {
     if (!session) return null;
 
     this.progressSession(session, this.now());
+    if (session.manager.state() === "waiting" && session.sourceMode === "players_liked") {
+      const contributors = this.playersLikedContributors(session);
+      const canBuild = contributors.length >= session.playersLikedRules.minContributors;
+      const nowMs = this.now();
+      const enoughCooldown =
+        !session.poolBuild.lastBuiltAtMs ||
+        nowMs - session.poolBuild.lastBuiltAtMs >= PLAYERS_LIKED_REBUILD_COOLDOWN_MS;
+      if (
+        canBuild &&
+        session.poolBuild.status !== "building" &&
+        session.poolBuild.status !== "ready" &&
+        enoughCooldown &&
+        !this.roomLikedPoolJobs.has(session.roomCode)
+      ) {
+        this.startPlayersLikedPoolBuild(session);
+      }
+    }
 
     const state = session.manager.state() as GameState;
     const currentRound = session.manager.round();

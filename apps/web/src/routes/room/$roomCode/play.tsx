@@ -173,24 +173,6 @@ export function RoomPlayPage() {
       };
       const rawPlaylists = Array.isArray(payload.playlists) ? payload.playlists : [];
       const playlists = rawPlaylists.filter(isUnifiedPlaylistOption);
-      if (!Array.isArray(payload.playlists)) {
-        console.error("[playlist-search] invalid backend payload shape", payload);
-      }
-      console.log("[playlist-search] backend payload", {
-        q: payload.q,
-        ok: payload.ok,
-        playlistsType: Array.isArray(payload.playlists) ? "array" : typeof payload.playlists,
-        playlistsCount: rawPlaylists.length,
-        validPlaylistsCount: playlists.length,
-        firstPlaylist: rawPlaylists[0]
-          ? {
-              provider: (rawPlaylists[0] as { provider?: string }).provider ?? null,
-              id: (rawPlaylists[0] as { id?: string }).id ?? null,
-              name: (rawPlaylists[0] as { name?: string }).name ?? null,
-              trackCount: (rawPlaylists[0] as { trackCount?: number | null }).trackCount ?? null,
-            }
-          : null,
-      });
       return {
         ok: payload.ok,
         q: payload.q,
@@ -200,28 +182,6 @@ export function RoomPlayPage() {
     enabled: isWaitingLobby && isHost && sourceMode === "public_playlist" && normalizedPlaylistQuery.length >= 2,
     staleTime: 2 * 60_000,
   });
-  useEffect(() => {
-    if (!isWaitingLobby || !isHost || sourceMode !== "public_playlist" || normalizedPlaylistQuery.length < 2) return;
-    if (playlistSearchQuery.isError) {
-      console.error("[playlist-search] query failed", playlistSearchQuery.error);
-      return;
-    }
-    if (!playlistSearchQuery.data) return;
-    console.log("[playlist-search] ui mapped playlists", {
-      q: playlistSearchQuery.data.q,
-      count: playlistSearchQuery.data.playlists.length,
-      firstPlaylist: playlistSearchQuery.data.playlists[0] ?? null,
-    });
-  }, [
-    isHost,
-    isWaitingLobby,
-    normalizedPlaylistQuery.length,
-    playlistSearchQuery.data,
-    playlistSearchQuery.error,
-    playlistSearchQuery.isError,
-    sourceMode,
-  ]);
-
   useEffect(() => {
     if (!state) {
       setLiveRound(null);
@@ -720,15 +680,13 @@ export function RoomPlayPage() {
 
           {state?.state === "waiting" && (
             <div className="waiting-box">
-              <h2>Lobby: tout le monde doit être prêt avant le lancement.</h2>
+              <h2>Tout le monde doit être prêt avant le lancement.</h2>
               {isResolvingTracks && (
                 <div className="resolving-tracks-banner" role="status" aria-live="polite">
                   <span className="resolving-tracks-spinner" aria-hidden="true" />
                   <div>
                     <strong>Résolution des sources audio en cours...</strong>
-                    <p className="status">
-                      Tracks fusionnées: {state.poolBuild.mergedTracksCount} | Pistes jouables: {state.poolBuild.playableTracksCount}
-                    </p>
+                    <p className="status">Préparation de la playlist des joueurs...</p>
                   </div>
                 </div>
               )}
@@ -822,10 +780,7 @@ export function RoomPlayPage() {
                   {sourceMode === "players_liked" && (
                     <div className="panel-form">
                       <p className="status">
-                        Les joueurs connectés peuvent contribuer Spotify et/ou Deezer.
-                      </p>
-                      <p className="status">
-                        Contributeurs actifs: {state.poolBuild.contributorsCount} | Tracks fusionnées: {state.poolBuild.mergedTracksCount} | Pistes prêtes: {state.poolBuild.playableTracksCount}
+                        Les comptes Spotify / Deezer connectés des joueurs sont utilisés automatiquement.
                       </p>
                     </div>
                   )}
@@ -851,26 +806,13 @@ export function RoomPlayPage() {
                     </button>
                     {(["spotify", "deezer"] as const).map((provider) => {
                       const linked = currentPlayer.libraryContribution.linkedProviders[provider];
-                      const included = currentPlayer.libraryContribution.includeInPool[provider];
                       return (
                         <div key={provider} className="waiting-actions">
                           <p className="status">
-                            {provider === "spotify" ? "Spotify" : "Deezer"}: {linked}
+                            {provider === "spotify" ? "Spotify" : "Deezer"}: {linked === "linked" ? "connecté" : linked}
                           </p>
                           {linked === "linked" ? (
                             <>
-                              <button
-                                className={`ghost-btn${included ? " selected" : ""}`}
-                                type="button"
-                                disabled={contributionMutation.isPending}
-                                onClick={() =>
-                                  contributionMutation.mutate({
-                                    provider,
-                                    includeInPool: !included,
-                                  })}
-                              >
-                                {included ? "Retirer du pool" : "Inclure dans le pool"}
-                              </button>
                               <button
                                 className="ghost-btn"
                                 type="button"
@@ -924,13 +866,6 @@ export function RoomPlayPage() {
                       <strong>{player.displayName}</strong>
                       <p>
                         {player.isHost ? "Host" : "Joueur"} - {player.isReady ? "Prêt" : "En attente"}
-                      </p>
-                      <p>
-                        Spotify: {player.libraryContribution.linkedProviders.spotify}
-                        {player.libraryContribution.includeInPool.spotify ? " (opt-in)" : ""}
-                        {" | "}
-                        Deezer: {player.libraryContribution.linkedProviders.deezer}
-                        {player.libraryContribution.includeInPool.deezer ? " (opt-in)" : ""}
                       </p>
                     </div>
                     {isHost && player.playerId !== session.playerId && (
@@ -1069,14 +1004,14 @@ export function RoomPlayPage() {
             }
           >
             {startErrorCode === "NO_TRACKS_FOUND" &&
-              "Aucune piste YouTube jouable trouvée. Vérifie YOUTUBE_API_KEY (quota inclus) ou YOUTUBE_INVIDIOUS_INSTANCES."}
+              "Aucune chanson jouable trouvée pour le moment. Réessaie dans quelques secondes."}
             {startErrorCode === "SPOTIFY_RATE_LIMITED" &&
               `Spotify limite temporairement les requêtes. Réessaye dans ${spotifyCooldownRemainingSec}s.`}
             {startErrorCode === "SOURCE_NOT_SET" && "Le host doit choisir une playlist avant de lancer."}
             {startErrorCode === "PLAYERS_LIBRARY_NOT_READY" &&
-              "Le mode Liked Songs nécessite des joueurs connectés et opt-in."}
+              "Le mode Liked Songs nécessite au moins un joueur avec un compte musical connecté."}
             {startErrorCode === "PLAYERS_LIBRARY_SYNCING" &&
-              "Synchronisation des bibliothèques en cours. Réessaie dans quelques secondes."}
+              "Les musiques des joueurs sont en cours de préparation. Réessaie dans quelques secondes."}
             {startErrorCode === "PLAYERS_NOT_READY" && "Tous les joueurs doivent être prêts."}
             {startErrorCode === "HOST_ONLY" && "Seul le host peut lancer la partie."}
             {sourceModeErrorCode === "HOST_ONLY" && "Seul le host peut changer le mode source."}
