@@ -23,15 +23,25 @@ Crée 4 services:
 3. `postgres` (Railway PostgreSQL plugin)
 4. `redis` (Railway Redis plugin)
 
+Les fichiers de config Railway sont déjà prêts:
+
+- `apps/api/railway.toml`
+- `apps/web/railway.toml`
+
+Si Railway ne détecte pas automatiquement le fichier:
+
+- Service `api` -> Settings -> Config as Code -> path: `apps/api/railway.toml`
+- Service `web` -> Settings -> Config as Code -> path: `apps/web/railway.toml`
+
 ## 4. Config service API
 
 Dans le service `api`:
 
-- Build command: `bun install`
-- Start command: `bun run start`
+- Build/start command: pris depuis `apps/api/railway.toml`
 
 Variables à définir:
 
+- modèle dispo: `apps/api/railway.env.example`
 - `DATABASE_URL` (injectée par service Postgres)
 - `REDIS_URL` (injectée par service Redis)
 - `BETTER_AUTH_SECRET` (long secret)
@@ -55,11 +65,11 @@ Important:
 
 Dans le service `web`:
 
-- Build command: `bun install && bun run build`
-- Start command: `bun run start`
+- Build/start command: pris depuis `apps/web/railway.toml`
 
 Variables à définir:
 
+- modèle dispo: `apps/web/railway.env.example`
 - `VITE_API_BASE_URL=https://<api-domain>`
 
 ## 6. Migration DB en prod
