@@ -104,25 +104,33 @@ create table if not exists provider_tracks (
 );
 
 create table if not exists resolved_tracks (
-  id bigserial primary key,
-  provider text not null,
-  source_id text not null,
+  source_id text primary key,
+  provider text not null check (provider in ('spotify', 'deezer')),
   title text not null,
   artist text not null,
   youtube_video_id text,
   duration_ms integer,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (provider, source_id)
+  updated_at timestamptz not null default now()
 );
 
 create table if not exists user_liked_tracks (
-  id bigserial primary key,
   user_id text not null references "user"(id) on delete cascade,
-  provider text not null check (provider in ('spotify', 'deezer')),
-  source_id text not null,
+  source_id text not null references resolved_tracks(source_id) on delete cascade,
+  provider text not null check (provider in ('spotify', 'deezer')) default 'spotify',
   added_at timestamptz not null default now(),
-  unique (user_id, provider, source_id)
+  primary key (user_id, source_id)
+);
+
+create table if not exists user_library_syncs (
+  user_id text primary key references "user"(id) on delete cascade,
+  status text not null check (status in ('idle', 'syncing', 'completed', 'error')) default 'idle',
+  progress integer not null default 0,
+  total_tracks integer not null default 0,
+  last_error text,
+  started_at timestamptz,
+  completed_at timestamptz,
+  updated_at timestamptz not null default now()
 );
 
 do $$
@@ -144,7 +152,71 @@ begin
   end if;
 end $$;
 
+alter table resolved_tracks add column if not exists provider text;
+alter table resolved_tracks add column if not exists title text;
+alter table resolved_tracks add column if not exists artist text;
+alter table resolved_tracks add column if not exists youtube_video_id text;
+alter table resolved_tracks add column if not exists duration_ms integer;
+alter table resolved_tracks add column if not exists created_at timestamptz not null default now();
+alter table resolved_tracks add column if not exists updated_at timestamptz not null default now();
 alter table resolved_tracks alter column youtube_video_id drop not null;
+
+create unique index if not exists idx_resolved_tracks_source_id_unique
+  on resolved_tracks(source_id);
+create unique index if not exists idx_resolved_tracks_provider_source_id_unique
+  on resolved_tracks(provider, source_id);
+
+alter table user_liked_tracks add column if not exists provider text;
+alter table user_liked_tracks add column if not exists added_at timestamptz not null default now();
+update user_liked_tracks set provider = 'spotify' where provider is null;
+alter table user_liked_tracks alter column provider set default 'spotify';
+alter table user_liked_tracks alter column provider set not null;
+
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'user_liked_tracks'
+      and column_name = 'id'
+  ) then
+    begin
+      alter table user_liked_tracks drop column id;
+    exception when undefined_column then
+      null;
+    end;
+  end if;
+end $$;
+
+alter table user_liked_tracks
+  drop constraint if exists user_liked_tracks_user_id_provider_source_id_key;
+alter table user_liked_tracks
+  add constraint user_liked_tracks_user_source_pk primary key (user_id, source_id);
+alter table user_liked_tracks
+  drop constraint if exists user_liked_tracks_source_id_fkey;
+alter table user_liked_tracks
+  add constraint user_liked_tracks_source_id_fkey
+  foreign key (source_id) references resolved_tracks(source_id) on delete cascade;
+
+do $$
+begin
+  if exists (
+    select 1
+    from pg_constraint
+    where conname = 'user_liked_tracks_provider_check'
+      and conrelid = 'user_liked_tracks'::regclass
+  ) then
+    alter table user_liked_tracks drop constraint user_liked_tracks_provider_check;
+  end if;
+  alter table user_liked_tracks
+    add constraint user_liked_tracks_provider_check
+    check (provider in ('spotify', 'deezer'));
+exception when duplicate_object then
+  null;
+end $$;
+
+create index if not exists idx_user_library_syncs_status on user_library_syncs(status);
 
 create table if not exists music_account_links (
   id bigserial primary key,
@@ -167,10 +239,10 @@ create index if not exists idx_round_submissions_round_id on round_submissions(r
 create index if not exists idx_music_account_links_user_id on music_account_links(user_id);
 create index if not exists idx_resolved_tracks_provider_source_id
   on resolved_tracks(provider, source_id);
-create index if not exists idx_user_liked_tracks_user_provider_added_at
-  on user_liked_tracks(user_id, provider, added_at desc);
-create index if not exists idx_user_liked_tracks_provider_source_id
-  on user_liked_tracks(provider, source_id);
+create index if not exists idx_user_liked_tracks_user_added_at
+  on user_liked_tracks(user_id, added_at desc);
+create index if not exists idx_user_liked_tracks_source_id
+  on user_liked_tracks(source_id);
 create index if not exists idx_session_user_id on session("userId");
 create index if not exists idx_account_user_id on account("userId");
 create index if not exists idx_verification_identifier on verification(identifier);

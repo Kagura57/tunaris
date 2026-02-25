@@ -70,3 +70,9 @@ export function readEnvVar(key: string): string | undefined {
 
   return undefined;
 }
+
+export function readRedisUrl(): string | undefined {
+  const value = readEnvVar("REDIS_URL")?.trim();
+  if (!value || value.length <= 0) return undefined;
+  return value;
+}

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { app } from "../src/index";
 import * as authClientModule from "../src/auth/client";
-import * as userMusicLibraryModule from "../src/services/UserMusicLibrary";
+import * as queueModule from "../src/services/jobs/spotify-sync-queue";
+import * as syncRepoModule from "../src/repositories/UserLibrarySyncRepository";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -10,12 +11,8 @@ afterEach(() => {
 describe("music library sync routes", () => {
   it("returns unauthorized when no session is present", async () => {
     const response = await app.handle(
-      new Request("http://localhost/music/library/sync", {
+      new Request("http://localhost/api/music/library/sync", {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ provider: "spotify" }),
       }),
     );
     expect(response.status).toBe(401);
@@ -24,7 +21,7 @@ describe("music library sync routes", () => {
     expect(payload.error).toBe("UNAUTHORIZED");
   });
 
-  it("syncs spotify liked tracks for authenticated users", async () => {
+  it("accepts sync job for authenticated users", async () => {
     vi.spyOn(authClientModule, "readSessionFromHeaders").mockResolvedValue({
       session: {
         id: "session-1",
@@ -37,39 +34,78 @@ describe("music library sync routes", () => {
         email: "user@example.com",
       },
     });
-    const syncSpy = vi.spyOn(userMusicLibraryModule, "syncUserLikedTracksLibrary").mockResolvedValue({
-      provider: "spotify",
-      fetchedCount: 120,
-      uniqueCount: 118,
-      savedCount: 118,
-      providerTotal: 350,
+    vi.spyOn(queueModule, "isSpotifySyncQueueConfigured").mockReturnValue(true);
+    const enqueueSpy = vi.spyOn(queueModule, "enqueueSpotifyLibrarySyncJob").mockResolvedValue({
+      id: "job-1",
+    } as Awaited<ReturnType<typeof queueModule.enqueueSpotifyLibrarySyncJob>>);
+    const upsertSpy = vi.spyOn(syncRepoModule.userLibrarySyncRepository, "upsert").mockResolvedValue({
+      userId: "user-1",
+      status: "syncing",
+      progress: 0,
+      totalTracks: 0,
+      lastError: null,
+      startedAtMs: Date.now(),
+      completedAtMs: null,
+      updatedAtMs: Date.now(),
     });
 
     const response = await app.handle(
-      new Request("http://localhost/music/library/sync", {
+      new Request("http://localhost/api/music/library/sync", {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ provider: "spotify" }),
       }),
+    );
+
+    expect(response.status).toBe(202);
+    const payload = (await response.json()) as {
+      ok: boolean;
+      status: string;
+      jobId: string | null;
+    };
+    expect(payload.ok).toBe(true);
+    expect(payload.status).toBe("accepted");
+    expect(payload.jobId).toBe("job-1");
+    expect(upsertSpy).toHaveBeenCalled();
+    expect(enqueueSpy).toHaveBeenCalledWith("user-1");
+  });
+
+  it("returns current sync status for authenticated users", async () => {
+    vi.spyOn(authClientModule, "readSessionFromHeaders").mockResolvedValue({
+      session: {
+        id: "session-1",
+        userId: "user-1",
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+      user: {
+        id: "user-1",
+        name: "User One",
+        email: "user@example.com",
+      },
+    });
+    vi.spyOn(syncRepoModule.userLibrarySyncRepository, "get").mockResolvedValue({
+      userId: "user-1",
+      status: "syncing",
+      progress: 42,
+      totalTracks: 1200,
+      lastError: null,
+      startedAtMs: Date.now() - 5_000,
+      completedAtMs: null,
+      updatedAtMs: Date.now(),
+    });
+
+    const response = await app.handle(
+      new Request("http://localhost/api/music/library/sync/status"),
     );
 
     expect(response.status).toBe(200);
     const payload = (await response.json()) as {
       ok: boolean;
-      provider: string;
-      fetchedCount: number;
-      uniqueCount: number;
-      savedCount: number;
-      providerTotal: number | null;
+      status: string;
+      progress: number;
+      totalTracks: number;
     };
     expect(payload.ok).toBe(true);
-    expect(payload.provider).toBe("spotify");
-    expect(payload.savedCount).toBe(118);
-    expect(syncSpy).toHaveBeenCalledWith({
-      userId: "user-1",
-      provider: "spotify",
-    });
+    expect(payload.status).toBe("syncing");
+    expect(payload.progress).toBe(42);
+    expect(payload.totalTracks).toBe(1200);
   });
 });

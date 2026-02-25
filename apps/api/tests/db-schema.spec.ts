@@ -7,6 +7,7 @@ describe("db schema contract", () => {
     expect(DOMAIN_TABLES).toContain("round_submissions");
     expect(DOMAIN_TABLES).toContain("resolved_tracks");
     expect(DOMAIN_TABLES).toContain("user_liked_tracks");
+    expect(DOMAIN_TABLES).toContain("user_library_syncs");
   });
 
   it("declares Better Auth core tables", () => {

@@ -93,6 +93,22 @@ type SyncedLibrarySourceTrack = {
   addedAtMs: number;
 };
 
+export type LibrarySyncProgressUpdate = {
+  stage: "syncing" | "saving" | "completed";
+  progress: number;
+  processedTracks: number;
+  totalTracks: number | null;
+};
+
+export class SpotifySyncRateLimitError extends Error {
+  readonly retryAfterMs: number;
+
+  constructor(retryAfterMs: number) {
+    super("SPOTIFY_RATE_LIMITED");
+    this.retryAfterMs = Math.max(1_000, Math.round(retryAfterMs));
+  }
+}
+
 function parseDateMs(value: string | null | undefined) {
   if (!value) return null;
   const parsed = Date.parse(value);
@@ -371,7 +387,10 @@ async function fetchDeezerLikedTracksRaw(userId: string, limit: number) {
   };
 }
 
-async function fetchSpotifyLikedTracksForSync(userId: string) {
+async function fetchSpotifyLikedTracksForSync(
+  userId: string,
+  onProgress?: (update: LibrarySyncProgressUpdate) => void | Promise<void>,
+) {
   const link = await getValidSpotifyLink(userId);
   if (!link?.accessToken) {
     return { tracks: [] as SyncedLibrarySourceTrack[], total: null as number | null };
@@ -387,6 +406,8 @@ async function fetchSpotifyLikedTracksForSync(userId: string) {
     const url = new URL("https://api.spotify.com/v1/me/tracks");
     url.searchParams.set("limit", String(pageLimit));
     url.searchParams.set("offset", String(offset));
+    let lastStatus: number | null = null;
+    let lastRetryAfterMs: number | null = null;
     const payload = (await fetchJsonWithTimeout(
       url,
       {
@@ -401,8 +422,21 @@ async function fetchSpotifyLikedTracksForSync(userId: string) {
           provider: "spotify",
           route: "user_saved_tracks_sync",
         },
+        onSuccess: ({ status }) => {
+          lastStatus = status;
+        },
+        onHttpError: ({ status, retryAfterMs }) => {
+          lastStatus = status;
+          lastRetryAfterMs = retryAfterMs;
+        },
       },
     )) as SpotifySavedTracksPayload | null;
+    if (!payload) {
+      if (lastStatus === 429) {
+        throw new SpotifySyncRateLimitError(lastRetryAfterMs ?? 30_000);
+      }
+      throw new Error("SPOTIFY_SYNC_FETCH_FAILED");
+    }
 
     if (typeof payload?.total === "number" && Number.isFinite(payload.total)) {
       total = payload.total;
@@ -428,6 +462,19 @@ async function fetchSpotifyLikedTracksForSync(userId: string) {
         addedAtMs: parseDateMs(item.added_at) ?? Date.now(),
       });
       if (tracks.length >= maxTracks) break;
+    }
+
+    if (onProgress) {
+      const totalTracks = typeof total === "number" && Number.isFinite(total) ? total : null;
+      const progress = totalTracks && totalTracks > 0
+        ? Math.max(1, Math.min(95, Math.round((tracks.length / totalTracks) * 90)))
+        : 0;
+      await onProgress({
+        stage: "syncing",
+        progress,
+        processedTracks: tracks.length,
+        totalTracks,
+      });
     }
 
     if (!payload?.next || page.length < pageLimit) break;
@@ -552,6 +599,7 @@ export async function fetchUserLikedTracksForProviders(input: {
 export async function syncUserLikedTracksLibrary(input: {
   userId: string;
   provider: LibraryProvider;
+  onProgress?: (update: LibrarySyncProgressUpdate) => void | Promise<void>;
 }) {
   const provider = input.provider;
   const userId = input.userId.trim();
@@ -561,7 +609,7 @@ export async function syncUserLikedTracksLibrary(input: {
 
   const fetched =
     provider === "spotify"
-      ? await fetchSpotifyLikedTracksForSync(userId)
+      ? await fetchSpotifyLikedTracksForSync(userId, input.onProgress)
       : await fetchDeezerLikedTracksForSync(userId);
   const uniqueBySource = new Map<string, SyncedLibrarySourceTrack>();
   for (const track of fetched.tracks) {
@@ -571,6 +619,15 @@ export async function syncUserLikedTracksLibrary(input: {
     }
   }
   const normalized = [...uniqueBySource.values()];
+
+  if (input.onProgress) {
+    await input.onProgress({
+      stage: "saving",
+      progress: 96,
+      processedTracks: normalized.length,
+      totalTracks: fetched.total,
+    });
+  }
 
   await resolvedTrackRepository.upsertSourceMetadataMany(
     normalized.map((track) => ({

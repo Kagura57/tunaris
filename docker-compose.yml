@@ -16,6 +16,21 @@ services:
       retries: 10
     volumes:
       - tunaris_postgres_data:/var/lib/postgresql/data
+  redis:
+    image: redis:7-alpine
+    container_name: tunaris-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - tunaris_redis_data:/data
 
 volumes:
   tunaris_postgres_data:
+  tunaris_redis_data:

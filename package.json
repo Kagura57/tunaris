@@ -9,7 +9,7 @@
     "dev:api": "cd apps/api && bun run dev",
     "dev:web": "cd apps/web && bun run dev",
     "db:migrate": "cd apps/api && bun run db:migrate",
-    "docker:up": "docker compose up -d postgres",
+    "docker:up": "docker compose up -d postgres redis",
     "docker:down": "docker compose down",
     "lint": "oxlint .",
     "format": "oxfmt --write .",

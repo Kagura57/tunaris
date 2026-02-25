@@ -9,6 +9,7 @@ export const DOMAIN_TABLES = [
   "provider_tracks",
   "resolved_tracks",
   "user_liked_tracks",
+  "user_library_syncs",
   "music_account_links",
 ] as const;
 

@@ -13,6 +13,7 @@ import { spotifyAuthDiagnostics } from "./routes/music/spotify-auth";
 import { quizRoutes } from "./routes/quiz";
 import { realtimeRoutes } from "./routes/realtime";
 import { roomRoutes } from "./routes/room";
+import { startSpotifySyncWorker } from "./services/jobs/spotify-sync-worker";
 import { roomStore } from "./services/RoomStore";
 import { trackCache } from "./services/TrackCache";
 
@@ -121,5 +122,6 @@ export const app = new Elysia()
 
 if (import.meta.main) {
   app.listen(API_PORT);
+  startSpotifySyncWorker();
   console.log(`Tunaris API running on http://127.0.0.1:${API_PORT}`);
 }
