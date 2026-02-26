@@ -132,23 +132,41 @@ export const musicSourceRoutes = new Elysia({ prefix: "/music" })
 
     const size = parseLimit(typeof query.size === "string" ? query.size : undefined, 12);
     const parsed = parseTrackSource(source);
-    const tracks = await resolveTrackPoolFromSource({
-      categoryQuery: source,
-      size,
-    });
-    const previewCount = tracks.filter(
-      (track) => typeof track.previewUrl === "string" && track.previewUrl.trim().length > 0,
-    ).length;
+    try {
+      const tracks = await resolveTrackPoolFromSource({
+        categoryQuery: source,
+        size,
+      });
+      const previewCount = tracks.filter(
+        (track) => typeof track.previewUrl === "string" && track.previewUrl.trim().length > 0,
+      ).length;
 
-    return {
-      ok: true as const,
-      source,
-      parsed,
-      count: tracks.length,
-      previewCount,
-      withoutPreviewCount: Math.max(0, tracks.length - previewCount),
-      tracks,
-    };
+      return {
+        ok: true as const,
+        source,
+        parsed,
+        count: tracks.length,
+        previewCount,
+        withoutPreviewCount: Math.max(0, tracks.length - previewCount),
+        tracks,
+      };
+    } catch (error) {
+      logEvent("warn", "music_source_resolve_failed", {
+        source,
+        size,
+        parsedType: parsed.type,
+        error: error instanceof Error ? error.message : "UNKNOWN_ERROR",
+      });
+      return {
+        ok: true as const,
+        source,
+        parsed,
+        count: 0,
+        previewCount: 0,
+        withoutPreviewCount: 0,
+        tracks: [],
+      };
+    }
   })
   .get("/playlists/search", async ({ query, set }) => {
     const limit = parseLimit(typeof query.limit === "string" ? query.limit : undefined, 24);
