@@ -3,6 +3,7 @@ builder = "RAILPACK"
 buildCommand = "if [ -d apps/api ]; then cd apps/api; fi && bun install"
 
 [deploy]
+preDeployCommand = "if [ -d apps/api ]; then cd apps/api; fi && bun run db:migrate:prod"
 startCommand = "if [ -d apps/api ]; then cd apps/api; fi && bun run start"
 healthcheckPath = "/health"
 restartPolicyType = "ON_FAILURE"
