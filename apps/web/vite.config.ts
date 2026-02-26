@@ -4,10 +4,10 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   preview: {
-    allowedHosts: ["web-production-340b0.up.railway.app", "api-production-0556.up.railway.app"],
+    allowedHosts: ["kwizik.app", "api.kwizik.app"],
   },
   server: {
-    allowedHosts: ["web-production-340b0.up.railway.app", "api-production-0556.up.railway.app"],
+    allowedHosts: ["kwizik.app", "api.kwizik.app"],
     proxy: {
       "/api": {
         target: "http://127.0.0.1:3001",
