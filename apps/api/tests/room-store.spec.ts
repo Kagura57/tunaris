@@ -94,6 +94,89 @@ const MCQ_NO_REPEAT_DISTRACTOR_TRACKS: MusicTrack[] = [
   },
 ];
 
+const COHERENT_LANGUAGE_TRACKS: MusicTrack[] = [
+  {
+    provider: "youtube",
+    id: "jp-1",
+    title: "夜のドライブ",
+    artist: "ミライ",
+    previewUrl: null,
+    sourceUrl: "https://www.youtube.com/watch?v=jp-1",
+  },
+  {
+    provider: "youtube",
+    id: "jp-2",
+    title: "光のシグナル",
+    artist: "ハルカ",
+    previewUrl: null,
+    sourceUrl: "https://www.youtube.com/watch?v=jp-2",
+  },
+  {
+    provider: "youtube",
+    id: "jp-3",
+    title: "蒼いメモリー",
+    artist: "ユナ",
+    previewUrl: null,
+    sourceUrl: "https://www.youtube.com/watch?v=jp-3",
+  },
+  {
+    provider: "youtube",
+    id: "jp-4",
+    title: "風のリズム",
+    artist: "アオイ",
+    previewUrl: null,
+    sourceUrl: "https://www.youtube.com/watch?v=jp-4",
+  },
+  {
+    provider: "youtube",
+    id: "jp-5",
+    title: "夏のエコー",
+    artist: "ナツキ",
+    previewUrl: null,
+    sourceUrl: "https://www.youtube.com/watch?v=jp-5",
+  },
+  {
+    provider: "youtube",
+    id: "en-1",
+    title: "Neon Skyline",
+    artist: "Amber Vale",
+    previewUrl: null,
+    sourceUrl: "https://www.youtube.com/watch?v=en-1",
+  },
+  {
+    provider: "youtube",
+    id: "en-2",
+    title: "City Runner",
+    artist: "Luca Forge",
+    previewUrl: null,
+    sourceUrl: "https://www.youtube.com/watch?v=en-2",
+  },
+  {
+    provider: "youtube",
+    id: "en-3",
+    title: "Silver Motion",
+    artist: "Nora Frame",
+    previewUrl: null,
+    sourceUrl: "https://www.youtube.com/watch?v=en-3",
+  },
+  {
+    provider: "youtube",
+    id: "en-4",
+    title: "Digital Sunset",
+    artist: "Mark Dune",
+    previewUrl: null,
+    sourceUrl: "https://www.youtube.com/watch?v=en-4",
+  },
+  {
+    provider: "youtube",
+    id: "en-5",
+    title: "Night Pulse",
+    artist: "Evan Glow",
+    previewUrl: null,
+    sourceUrl: "https://www.youtube.com/watch?v=en-5",
+  },
+];
+
 function deferred<T>() {
   let resolve: (value: T | PromiseLike<T>) => void = () => undefined;
   const promise = new Promise<T>((nextResolve) => {
@@ -357,6 +440,47 @@ describe("RoomStore gameplay progression", () => {
     expect(
       choices.filter((choice) => choice === "Walking On A Dream - Empire Of The Sun"),
     ).toHaveLength(1);
+  });
+
+  it("builds MCQ choices with coherent language distractors when enough candidates exist", async () => {
+    let nowMs = 0;
+    const store = new RoomStore({
+      now: () => nowMs,
+      getTrackPool: async () => COHERENT_LANGUAGE_TRACKS,
+      config: {
+        countdownMs: 5,
+        playingMs: 50,
+        revealMs: 5,
+        leaderboardMs: 5,
+        baseScore: 1_000,
+        maxRounds: 1,
+      },
+    });
+
+    const created = store.createRoom();
+    const host = store.joinRoom(created.roomCode, "Host");
+    expect(host.status).toBe("ok");
+    if (host.status !== "ok") return;
+
+    const sourceSet = store.setRoomSource(created.roomCode, host.value.playerId, "coherent language");
+    expect(sourceSet.status).toBe("ok");
+    const ready = store.setPlayerReady(created.roomCode, host.value.playerId, true);
+    expect(ready.status).toBe("ok");
+    await store.startGame(created.roomCode, host.value.playerId);
+
+    nowMs = 5;
+    const playing = store.roomState(created.roomCode);
+    expect(playing?.state).toBe("playing");
+    const choices = playing?.choices ?? [];
+    expect(choices).toHaveLength(4);
+
+    const activeTrack = COHERENT_LANGUAGE_TRACKS.find((track) => track.id === playing?.media?.trackId);
+    const correct = activeTrack ? `${activeTrack.title} - ${activeTrack.artist}` : "";
+    const hasJapaneseScript = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/u;
+    const correctIsJapanese = hasJapaneseScript.test(correct);
+    const sameLanguageCount = choices.filter((choice) => hasJapaneseScript.test(choice) === correctIsJapanese).length;
+
+    expect(sameLanguageCount >= 3).toBe(true);
   });
 
   it("accepts youtube tracks without preview as playable rounds", async () => {

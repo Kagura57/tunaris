@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
-import { isJapanese, toRomaji } from "wanakana";
+import { toRomaji } from "wanakana";
 import { fetchLiveRoomState } from "../../../lib/realtime";
 
 const ROUND_MS = 12_000;
@@ -36,11 +36,8 @@ function revealArtworkUrl(reveal: { provider: "spotify" | "deezer" | "apple-musi
 }
 
 function withRomajiLabel(value: string, providedRomaji?: string | null) {
-  if (providedRomaji && providedRomaji.trim().length > 0) {
-    return `${value} · ${providedRomaji.trim()}`;
-  }
-  if (!value || !isJapanese(value)) return value;
-  const romaji = toRomaji(value);
+  if (!value) return value;
+  const romaji = providedRomaji?.trim().length ? providedRomaji.trim() : toRomaji(value).trim();
   if (!romaji || romaji.toLowerCase() === value.toLowerCase()) return value;
   return `${value} · ${romaji}`;
 }
@@ -275,7 +272,7 @@ export function RoomViewPage() {
           <div className="projection-choices">
             {state.choices.map((choice, index) => (
               <div key={`${choice}-${index}`} className="projection-choice">
-                {choice}
+                {withRomajiLabel(choice)}
               </div>
             ))}
           </div>

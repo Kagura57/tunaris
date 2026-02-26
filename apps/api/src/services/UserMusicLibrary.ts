@@ -605,18 +605,43 @@ export async function fetchUserLikedTracksForProviders(input: {
   const providers = input.providers.filter(
     (provider): provider is LibraryProvider => provider === "spotify" || provider === "deezer",
   );
-  const merged = await buildSyncedUserLibraryTrackPool({
-    userId,
-    providers,
-    size: Math.max(30, safeSize * 3),
-  });
+  const fetchWindowBase = Math.max(30, safeSize * 3);
+  const fetchWindowCap = 400;
+  const fetchAttempts = 3;
+  const mergedSourceTracks = new Map<string, MusicTrack>();
+  const fetchCountsByAttempt: number[] = [];
+
+  for (let attempt = 0; attempt < fetchAttempts; attempt += 1) {
+    const fetchSize = Math.min(fetchWindowCap, fetchWindowBase * (attempt + 1));
+    const merged = await buildSyncedUserLibraryTrackPool({
+      userId,
+      providers,
+      size: fetchSize,
+    });
+    fetchCountsByAttempt.push(merged.length);
+    for (const track of merged) {
+      const key = `${track.provider}:${track.id}`;
+      if (!mergedSourceTracks.has(key)) {
+        mergedSourceTracks.set(key, track);
+      }
+    }
+    if (mergedSourceTracks.size >= Math.max(safeSize * 4, 120)) {
+      break;
+    }
+  }
+
+  const merged = [...mergedSourceTracks.values()];
   const fetchedCount = merged.length;
-  const deduped = dedupeTracks(merged, Math.max(safeSize * 2, safeSize));
-  const playable = await resolveTracksToPlayableYouTube(deduped, safeSize, "liked songs");
+  const deduped = dedupeTracks(merged, Math.max(safeSize * 3, safeSize));
+  const playable = await resolveTracksToPlayableYouTube(deduped, safeSize);
   logEvent("info", "user_liked_tracks_resolved_from_synced_library", {
     userId,
     providers,
     requestedSize: safeSize,
+    fetchWindowBase,
+    fetchWindowCap,
+    fetchAttempts,
+    fetchCountsByAttempt,
     syncedFetchedCount: fetchedCount,
     dedupedCount: deduped.length,
     playableCount: playable.length,

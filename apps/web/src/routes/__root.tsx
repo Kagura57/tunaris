@@ -1,19 +1,22 @@
-import { useEffect, useRef } from "react";
+import { MouseEvent, useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, Outlet, useRouterState } from "@tanstack/react-router";
-import { getAuthSession, signOutAccount } from "../lib/api";
+import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
+import { getAuthSession, leaveRoom as leaveRoomApi, signOutAccount } from "../lib/api";
 import { useGameStore } from "../stores/gameStore";
 
 export function RootLayout() {
   const clearSession = useGameStore((state) => state.clearSession);
+  const session = useGameStore((state) => state.session);
   const account = useGameStore((state) => state.account);
   const setAccount = useGameStore((state) => state.setAccount);
   const clearAccount = useGameStore((state) => state.clearAccount);
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   });
   const wasInRoomRef = useRef(false);
+  const leavingForHomeRef = useRef(false);
   const isRoomRoute = /^\/room\/[^/]+\/(play|view)$/.test(pathname);
 
   const authSessionQuery = useQuery({
@@ -34,10 +37,45 @@ export function RootLayout() {
 
   useEffect(() => {
     if (!isRoomRoute && wasInRoomRef.current) {
+      if (session.roomCode && session.playerId) {
+        void leaveRoomApi({
+          roomCode: session.roomCode,
+          playerId: session.playerId,
+        }).catch(() => undefined);
+      }
       clearSession();
     }
     wasInRoomRef.current = isRoomRoute;
-  }, [clearSession, isRoomRoute]);
+  }, [clearSession, isRoomRoute, session.playerId, session.roomCode]);
+
+  function onRoomHomeClick(event: MouseEvent<HTMLAnchorElement>) {
+    if (!isRoomRoute) return;
+    if (leavingForHomeRef.current) {
+      event.preventDefault();
+      return;
+    }
+
+    event.preventDefault();
+    leavingForHomeRef.current = true;
+
+    const finish = () => {
+      clearSession();
+      navigate({ to: "/" });
+      leavingForHomeRef.current = false;
+    };
+
+    if (!session.roomCode || !session.playerId) {
+      finish();
+      return;
+    }
+
+    void leaveRoomApi({
+      roomCode: session.roomCode,
+      playerId: session.playerId,
+    })
+      .catch(() => undefined)
+      .finally(finish);
+  }
 
   useEffect(() => {
     if (!authSessionQuery.isSuccess) return;
@@ -57,10 +95,10 @@ export function RootLayout() {
     return (
       <main className="game-shell">
         <header className="room-topbar">
-          <Link className="brand" to="/">
+          <Link className="brand" to="/" onClick={onRoomHomeClick}>
             <img className="brand-lockup" src="/logo.svg" alt="Kwizik" />
           </Link>
-          <Link className="ghost-btn" to="/">
+          <Link className="ghost-btn" to="/" onClick={onRoomHomeClick}>
             Accueil
           </Link>
         </header>

@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { isJapanese, toRomaji } from "wanakana";
+import { toRomaji } from "wanakana";
 import {
   HttpStatusError,
   kickPlayer,
@@ -76,11 +76,8 @@ function formatTrackCountLabel(value: number | null | undefined) {
 }
 
 function withRomajiLabel(value: string, providedRomaji?: string | null) {
-  if (providedRomaji && providedRomaji.trim().length > 0) {
-    return `${value} · ${providedRomaji.trim()}`;
-  }
-  if (!value || !isJapanese(value)) return value;
-  const romaji = toRomaji(value);
+  if (!value) return value;
+  const romaji = providedRomaji?.trim().length ? providedRomaji.trim() : toRomaji(value).trim();
   if (!romaji || romaji.toLowerCase() === value.toLowerCase()) return value;
   return `${value} · ${romaji}`;
 }
@@ -1056,7 +1053,7 @@ export function RoomPlayPage() {
                   disabled={answerMutation.isPending || !session.playerId || mcqLocked}
                   onClick={() => onSelectChoice(choice)}
                 >
-                  {choice}
+                  {withRomajiLabel(choice)}
                 </button>
               ))}
             </div>

@@ -162,10 +162,13 @@ export async function buildSyncedUserLibraryTrackPool(input: {
   size: number;
 }) {
   const safeSize = Math.max(1, Math.min(input.size, 400));
+  const randomSeed = `${Date.now()}:${Math.random().toString(36).slice(2, 12)}`;
   const rows = await userLikedTrackRepository.listForUsers({
     userIds: [input.userId],
     providers: input.providers,
     limit: safeSize,
+    orderBy: "random",
+    randomSeed,
   });
 
   const tracks: MusicTrack[] = [];
@@ -193,6 +196,7 @@ export async function buildSyncedUserLibraryTrackPool(input: {
     userId: input.userId,
     providers: input.providers,
     requestedSize: safeSize,
+    orderBy: "random",
     loadedCount: tracks.length,
     rawCount: rows.length,
   });

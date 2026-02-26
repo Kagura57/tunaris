@@ -154,6 +154,41 @@ function normalizeAnswer(value: string) {
     .trim();
 }
 
+function collectAnswerVariants(track: MusicTrack) {
+  const variants = new Set<string>();
+
+  const push = (value: string | null | undefined) => {
+    const normalized = value?.trim() ?? "";
+    if (normalized.length <= 0) return;
+    variants.add(normalized);
+  };
+
+  push(track.title);
+  push(track.artist);
+  push(`${track.title} ${track.artist}`);
+  push(asChoiceLabel(track));
+
+  const titleRomaji = getRomanizedJapaneseCached(track.title);
+  const artistRomaji = getRomanizedJapaneseCached(track.artist);
+  push(titleRomaji);
+  push(artistRomaji);
+
+  if (titleRomaji && artistRomaji) {
+    push(`${titleRomaji} ${artistRomaji}`);
+    push(`${titleRomaji} - ${artistRomaji}`);
+  }
+  if (titleRomaji) {
+    push(`${titleRomaji} ${track.artist}`);
+    push(`${titleRomaji} - ${track.artist}`);
+  }
+  if (artistRomaji) {
+    push(`${track.title} ${artistRomaji}`);
+    push(`${track.title} - ${artistRomaji}`);
+  }
+
+  return [...variants];
+}
+
 function averageResponseMs(player: Player) {
   if (player.correctAnswers <= 0) {
     return Number.POSITIVE_INFINITY;
@@ -168,6 +203,178 @@ function modeForRound(round: number): RoundMode {
 
 function asChoiceLabel(track: MusicTrack) {
   return `${track.title} - ${track.artist}`;
+}
+
+type TrackLanguageGroup = "japanese" | "korean" | "latin" | "other";
+type TrackGenreGroup =
+  | "metal"
+  | "rock"
+  | "pop"
+  | "jpop"
+  | "kpop"
+  | "rap"
+  | "electro"
+  | "other";
+type TrackVocalGroup = "female" | "male" | "mixed" | "unknown";
+
+type TrackChoiceProfile = {
+  language: TrackLanguageGroup;
+  genre: TrackGenreGroup;
+  vocal: TrackVocalGroup;
+};
+
+const JAPANESE_SCRIPT_RE = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/u;
+const KOREAN_SCRIPT_RE = /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/u;
+
+const GENRE_PATTERNS: Array<{ genre: TrackGenreGroup; regex: RegExp }> = [
+  { genre: "metal", regex: /\b(metal|deathcore|metalcore|thrash|black metal|heavy metal)\b/i },
+  { genre: "rock", regex: /\b(rock|punk|grunge|alt rock|indie rock|hard rock)\b/i },
+  { genre: "kpop", regex: /\b(k-pop|kpop)\b/i },
+  { genre: "jpop", regex: /\b(j-pop|jpop|anisong|anime opening|anime op)\b/i },
+  { genre: "rap", regex: /\b(rap|hip hop|hip-hop|trap|drill|freestyle)\b/i },
+  { genre: "electro", regex: /\b(edm|electro|house|techno|trance|dubstep|drum ?& ?bass|dnb)\b/i },
+  { genre: "pop", regex: /\b(pop|radio edit|mainstream)\b/i },
+];
+
+const FEMALE_VOCAL_HINTS = [
+  "girls",
+  "girl",
+  "women",
+  "woman",
+  "sisters",
+  "queen",
+  "princess",
+  "diva",
+];
+
+const MALE_VOCAL_HINTS = [
+  "boys",
+  "boy",
+  "men",
+  "man",
+  "brothers",
+  "king",
+  "prince",
+];
+
+const FEMALE_FIRST_NAMES = new Set([
+  "adele",
+  "ariana",
+  "ava",
+  "aya",
+  "billie",
+  "camila",
+  "charli",
+  "dua",
+  "ellie",
+  "halsey",
+  "jennie",
+  "jisoo",
+  "karina",
+  "lisa",
+  "lorde",
+  "momo",
+  "olivia",
+  "rihanna",
+  "rosalia",
+  "sabrina",
+  "sana",
+  "shakira",
+  "sia",
+  "taylor",
+  "yuna",
+  "yui",
+]);
+
+const MALE_FIRST_NAMES = new Set([
+  "bruno",
+  "drake",
+  "ed",
+  "eminem",
+  "harry",
+  "jay",
+  "jimin",
+  "jungkook",
+  "kendrick",
+  "post",
+  "suga",
+  "taemin",
+  "theweeknd",
+  "travis",
+  "weeknd",
+]);
+
+function firstArtistToken(value: string) {
+  const normalized = normalizeChoiceText(value).replace(/[^a-z0-9 ]+/g, " ").trim();
+  return normalized.split(/\s+/).find((token) => token.length > 0) ?? "";
+}
+
+function normalizeChoiceText(value: string) {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function detectLanguageGroup(track: Pick<MusicTrack, "title" | "artist">): TrackLanguageGroup {
+  const text = `${track.title} ${track.artist}`;
+  if (JAPANESE_SCRIPT_RE.test(text)) return "japanese";
+  if (KOREAN_SCRIPT_RE.test(text)) return "korean";
+
+  const normalized = normalizeChoiceText(text);
+  if (/^[\x00-\x7f\s\W]+$/.test(normalized)) return "latin";
+  return "other";
+}
+
+function detectGenreGroup(track: Pick<MusicTrack, "title" | "artist">): TrackGenreGroup {
+  const normalized = normalizeChoiceText(`${track.title} ${track.artist}`);
+  for (const rule of GENRE_PATTERNS) {
+    if (rule.regex.test(normalized)) return rule.genre;
+  }
+  if (JAPANESE_SCRIPT_RE.test(`${track.title} ${track.artist}`)) return "jpop";
+  if (KOREAN_SCRIPT_RE.test(`${track.title} ${track.artist}`)) return "kpop";
+  return "other";
+}
+
+function detectVocalGroup(track: Pick<MusicTrack, "artist">): TrackVocalGroup {
+  const artist = normalizeChoiceText(track.artist);
+  const hasSplitMarkers = /\b(feat|ft|x|&|and|vs)\b/i.test(artist) || /[,/]/.test(artist);
+  if (hasSplitMarkers) return "mixed";
+  if (FEMALE_VOCAL_HINTS.some((hint) => artist.includes(hint))) return "female";
+  if (MALE_VOCAL_HINTS.some((hint) => artist.includes(hint))) return "male";
+  const firstToken = firstArtistToken(track.artist);
+  if (FEMALE_FIRST_NAMES.has(firstToken)) return "female";
+  if (MALE_FIRST_NAMES.has(firstToken)) return "male";
+  return "unknown";
+}
+
+function buildChoiceProfile(track: Pick<MusicTrack, "title" | "artist">): TrackChoiceProfile {
+  return {
+    language: detectLanguageGroup(track),
+    genre: detectGenreGroup(track),
+    vocal: detectVocalGroup(track),
+  };
+}
+
+function choiceCoherenceScore(
+  source: TrackChoiceProfile,
+  candidate: TrackChoiceProfile,
+  sourceTrack: Pick<MusicTrack, "artist">,
+  candidateTrack: Pick<MusicTrack, "artist">,
+) {
+  let score = 0;
+  if (source.language === candidate.language) score += 70;
+  if (source.genre === candidate.genre) score += 45;
+  if (source.vocal !== "unknown" && source.vocal === candidate.vocal) score += 25;
+
+  const sameArtist =
+    normalizeChoiceText(sourceTrack.artist).trim() === normalizeChoiceText(candidateTrack.artist).trim();
+  if (sameArtist) score -= 20;
+
+  if (source.language === "japanese" && candidate.language !== "japanese") score -= 40;
+  if (source.genre !== "other" && candidate.genre !== source.genre) score -= 15;
+
+  return score;
 }
 
 const TRACK_PROMOTION_PATTERNS = [
@@ -410,18 +617,27 @@ export class RoomStore {
     if (!track) return [];
 
     const correct = asChoiceLabel(track);
-    const distractors = randomShuffle(
-      session.distractorTrackPool
-        .map(asChoiceLabel)
-        .filter((value) => value !== correct)
-    );
+    const sourceProfile = buildChoiceProfile(track);
+    const distractorCandidates = session.distractorTrackPool
+      .filter((candidate) => asChoiceLabel(candidate) !== correct)
+      .map((candidate) => ({
+        label: asChoiceLabel(candidate),
+        track: candidate,
+        profile: buildChoiceProfile(candidate),
+      }));
+    const rankedDistractors = randomShuffle(distractorCandidates)
+      .map((entry) => ({
+        ...entry,
+        score: choiceCoherenceScore(sourceProfile, entry.profile, track, entry.track),
+      }))
+      .sort((left, right) => right.score - left.score);
 
     const uniqueOptions = [correct];
     const seen = new Set(uniqueOptions);
-    for (const distractor of distractors) {
-      if (seen.has(distractor)) continue;
-      uniqueOptions.push(distractor);
-      seen.add(distractor);
+    for (const distractor of rankedDistractors) {
+      if (seen.has(distractor.label)) continue;
+      uniqueOptions.push(distractor.label);
+      seen.add(distractor.label);
       if (uniqueOptions.length >= 4) break;
     }
 
@@ -731,12 +947,8 @@ export class RoomStore {
       return normalizeAnswer(answer) === expected;
     }
 
-    return (
-      isTextAnswerCorrect(answer, track.title) ||
-      isTextAnswerCorrect(answer, track.artist) ||
-      isTextAnswerCorrect(answer, `${track.title} ${track.artist}`) ||
-      isTextAnswerCorrect(answer, asChoiceLabel(track))
-    );
+    const variants = collectAnswerVariants(track);
+    return variants.some((candidate) => isTextAnswerCorrect(answer, candidate));
   }
 
   private isSpotifyRateLimitedRecently() {
@@ -1450,6 +1662,10 @@ export class RoomStore {
     for (let round = 1; round <= session.totalRounds; round += 1) {
       if (session.roundModes[round - 1] === "mcq") this.buildRoundChoices(session, round);
     }
+    for (const track of session.trackPool) {
+      scheduleRomanizeJapanese(track.title);
+      scheduleRomanizeJapanese(track.artist);
+    }
 
     for (const player of session.players.values()) {
       player.score = 0;
@@ -1598,6 +1814,10 @@ export class RoomStore {
     const state = session.manager.state() as GameState;
     const currentRound = session.manager.round();
     const activeTrack = currentRound > 0 ? (session.trackPool[currentRound - 1] ?? null) : null;
+    if (activeTrack) {
+      scheduleRomanizeJapanese(activeTrack.title);
+      scheduleRomanizeJapanese(activeTrack.artist);
+    }
     const currentMode = currentRound > 0 ? (session.roundModes[currentRound - 1] ?? null) : null;
     const choices =
       state === "playing" && currentMode === "mcq"
