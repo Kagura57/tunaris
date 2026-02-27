@@ -4,6 +4,7 @@ import { musicAccountRepository, type MusicProvider } from "../repositories/Musi
 import { matchRepository } from "../repositories/MatchRepository";
 import { profileRepository } from "../repositories/ProfileRepository";
 import { userLibrarySyncRepository } from "../repositories/UserLibrarySyncRepository";
+import { buildAniListConnectUrl, handleAniListOAuthCallback } from "../services/AniListOAuthService";
 import { buildMusicConnectUrl, handleMusicOAuthCallback } from "../services/MusicOAuthService";
 import { fetchUserLikedTracks, fetchUserPlaylists } from "../services/UserMusicLibrary";
 
@@ -61,6 +62,44 @@ export const accountRoutes = new Elysia({ prefix: "/account" })
       profile,
       history,
     };
+  })
+  .get("/anilist/connect/start", async ({ headers, query, set }) => {
+    const authContext = await requireSession(headers as unknown, set);
+    if (!authContext) {
+      return { ok: false, error: "UNAUTHORIZED" };
+    }
+    const connect = buildAniListConnectUrl({
+      userId: authContext.user.id,
+      returnTo: typeof query.returnTo === "string" ? query.returnTo : null,
+    });
+    if (!connect) {
+      set.status = 503;
+      return { ok: false, error: "PROVIDER_NOT_CONFIGURED" };
+    }
+    return {
+      ok: true as const,
+      provider: "anilist" as const,
+      authorizeUrl: connect.url,
+    };
+  })
+  .get("/anilist/connect/callback", async ({ query, set }) => {
+    const code = typeof query.code === "string" ? query.code.trim() : "";
+    const state = typeof query.state === "string" ? query.state.trim() : "";
+    if (!code || !state) {
+      set.status = 400;
+      return "Missing OAuth code/state.";
+    }
+
+    const result = await handleAniListOAuthCallback({
+      code,
+      state,
+    });
+    const target = result.returnTo?.trim() ?? "";
+    const redirect = target.length > 0 ? target : "/";
+    set.headers["content-type"] = "text/html; charset=utf-8";
+    return `<!doctype html><html><body><script>const message=${JSON.stringify(
+      { source: "kwizik-anilist-oauth", provider: "anilist", ok: result.ok },
+    )};if(window.opener){window.opener.postMessage(message,"*");window.close();}else{window.location.replace(${JSON.stringify(redirect)});}</script></body></html>`;
   })
   .get("/music/providers", async ({ headers, set }) => {
     const authContext = await requireSession(headers as unknown, set);
