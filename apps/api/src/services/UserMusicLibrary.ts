@@ -454,6 +454,12 @@ async function fetchSpotifyLikedTracksForSync(
         if (detail.includes("scope")) {
           throw new Error("SPOTIFY_SYNC_SCOPE_MISSING_USER_LIBRARY_READ");
         }
+        if (
+          detail.includes("developer dashboard") ||
+          detail.includes("not registered")
+        ) {
+          throw new Error("SPOTIFY_SYNC_ACCOUNT_NOT_APPROVED");
+        }
         throw new Error("SPOTIFY_SYNC_FORBIDDEN");
       }
       if (lastStatus === 400) {
@@ -650,7 +656,28 @@ export async function fetchUserLikedTracksForProviders(input: {
     deduped.filter((track) => isYouTubePlayableTrack(track)),
     safeSize,
   );
-  if (preResolvedPlayable.length >= safeSize || !allowExternalResolve) {
+  if (!allowExternalResolve) {
+    logEvent("info", "user_liked_tracks_resolved_from_synced_library", {
+      userId,
+      providers,
+      requestedSize: safeSize,
+      allowExternalResolve,
+      fetchWindowBase,
+      fetchWindowCap,
+      fetchAttempts,
+      fetchCountsByAttempt,
+      syncedFetchedCount: fetchedCount,
+      dedupedCount: deduped.length,
+      expandedDedupedCount: deduped.length,
+      secondPassTriggered: false,
+      topUpResolvedCount: 0,
+      preResolvedPlayableCount: preResolvedPlayable.length,
+      playableCount: preResolvedPlayable.length,
+    });
+    return deduped;
+  }
+
+  if (preResolvedPlayable.length >= safeSize) {
     logEvent("info", "user_liked_tracks_resolved_from_synced_library", {
       userId,
       providers,

@@ -125,7 +125,6 @@ const DEFAULT_ROUND_CONFIG = {
 const TRACK_POOL_TARGET_MULTIPLIER = 5;
 const TRACK_POOL_MIN_CANDIDATES = 24;
 const TRACK_POOL_MAX_CANDIDATES = 100;
-const PLAYERS_LIKED_TARGET_BUFFER = 2;
 const YOUTUBE_RANDOM_START_MIN_SEC = 18;
 const YOUTUBE_RANDOM_START_END_BUFFER_SEC = 20;
 const YOUTUBE_RANDOM_START_MIN_DURATION_SEC = 45;
@@ -874,14 +873,16 @@ export class RoomStore {
   private async buildPlayersLikedTrackPool(
     session: RoomSession,
     requestedRounds: number,
-    options: { allowExternalResolve?: boolean } = {},
+    options: { allowExternalResolve?: boolean; candidateSizeOverride?: number } = {},
   ) {
     const safeRounds = Math.max(1, requestedRounds);
     const allowExternalResolve = options.allowExternalResolve === true;
-    // Keep players_liked startup close to requested rounds to avoid massive resolution bursts.
-    const targetCandidateSize = Math.min(
-      TRACK_POOL_MAX_CANDIDATES,
-      safeRounds + PLAYERS_LIKED_TARGET_BUFFER,
+    const targetCandidateSize = Math.max(
+      1,
+      Math.min(
+        TRACK_POOL_MAX_CANDIDATES,
+        Math.floor(options.candidateSizeOverride ?? this.targetCandidatePoolSize(safeRounds)),
+      ),
     );
     const contributors = this.playersLikedContributors(session);
     const mergedTracks: MusicTrack[] = [];
@@ -911,7 +912,6 @@ export class RoomStore {
       fetchedTotal += fetched.length;
 
       for (const track of fetched) {
-        if (!isTrackPlayable(track)) continue;
         if (looksLikePromotionalTrack(track)) continue;
         const key = trackSignature(track);
         if (seen.has(key)) continue;
@@ -920,13 +920,18 @@ export class RoomStore {
       }
     }
 
-    const split = this.splitAnswerAndDistractorPools(mergedTracks, safeRounds);
+    const playableTracks = mergedTracks.filter((track) => isTrackPlayable(track));
+    const split = this.splitAnswerAndDistractorPools(playableTracks, safeRounds);
+    const selectedAnswerKeys = new Set(split.tracks.map((track) => trackSignature(track)));
+    const distractorTracks = randomShuffle(
+      mergedTracks.filter((track) => !selectedAnswerKeys.has(trackSignature(track))),
+    );
     return {
       tracks: split.tracks,
-      distractorTracks: split.distractorTracks,
-      candidateCount: split.candidateCount,
+      distractorTracks,
+      candidateCount: mergedTracks.length,
       fetchedTotal,
-      playableTotal: mergedTracks.length,
+      playableTotal: playableTracks.length,
       cleanTotal: mergedTracks.length,
       contributorsCount: contributors.length,
     };
@@ -1721,34 +1726,49 @@ export class RoomStore {
       playableTotal: number;
       cleanTotal: number;
     };
+    const reusablePlayersLikedPlayablePool = session.sourceMode === "players_liked"
+      ? session.playersLikedPool.filter((track) => isTrackPlayable(track))
+      : [];
     const canReusePlayersLikedPool = session.sourceMode === "players_liked"
       && session.poolBuild.status === "ready"
-      && session.playersLikedPool.length >= poolSize;
+      && reusablePlayersLikedPlayablePool.length >= poolSize;
 
     if (canReusePlayersLikedPool) {
-      const split = this.splitAnswerAndDistractorPools(session.playersLikedPool, poolSize);
+      const split = this.splitAnswerAndDistractorPools(reusablePlayersLikedPlayablePool, poolSize);
+      const answerSignatures = new Set(split.tracks.map((track) => trackSignature(track)));
+      const distractorTracks = randomShuffle(
+        session.playersLikedPool.filter((track) => !answerSignatures.has(trackSignature(track))),
+      );
       startPoolStats = {
         tracks: split.tracks,
-        distractorTracks: split.distractorTracks,
-        candidateCount: split.candidateCount,
-        rawTotal: split.candidateCount,
+        distractorTracks,
+        candidateCount: session.playersLikedPool.length,
+        rawTotal: session.playersLikedPool.length,
         playableTotal: split.candidateCount,
-        cleanTotal: split.candidateCount,
+        cleanTotal: session.playersLikedPool.length,
       };
       logEvent("info", "room_start_trackpool_reused_prebuilt", {
         roomCode,
         categoryQuery: resolvedQuery,
         startupPoolSize: poolSize,
         requestedRounds: poolSize,
-        candidatePoolSize: split.candidateCount,
+        candidatePoolSize: session.playersLikedPool.length,
+        playablePoolSize: split.candidateCount,
       });
+    } else if (session.sourceMode === "players_liked") {
+      if (session.manager.state() === "waiting" && session.poolBuild.status !== "building") {
+        this.startPlayersLikedPoolBuild(session);
+      }
+      return {
+        ok: false as const,
+        error: "PLAYERS_LIBRARY_SYNCING" as const,
+        retryAfterMs: 1_500,
+      };
     } else {
       try {
         startPoolStats = await this.resolveTracksWithFlag(
           session,
-          async () => session.sourceMode === "players_liked"
-            ? await this.buildPlayersLikedTrackPool(session, poolSize, { allowExternalResolve: true })
-            : await this.buildStartTrackPool(resolvedQuery, poolSize),
+          async () => await this.buildStartTrackPool(resolvedQuery, poolSize),
         );
         for (
           let retryAttempt = 2;
@@ -1766,9 +1786,7 @@ export class RoomStore {
           });
           startPoolStats = await this.resolveTracksWithFlag(
             session,
-            async () => session.sourceMode === "players_liked"
-              ? await this.buildPlayersLikedTrackPool(session, poolSize, { allowExternalResolve: true })
-              : await this.buildStartTrackPool(resolvedQuery, poolSize),
+            async () => await this.buildStartTrackPool(resolvedQuery, poolSize),
           );
         }
       } catch (error) {
@@ -1819,6 +1837,28 @@ export class RoomStore {
           error: "NO_TRACKS_FOUND" as const,
         };
       }
+    }
+
+    if (session.sourceMode === "players_liked" && session.playersLikedPool.length > 0) {
+      const answerSignatures = new Set(startPoolStats.tracks.map((track) => trackSignature(track)));
+      const mergedDistractorCandidates = [
+        ...startPoolStats.distractorTracks,
+        ...session.playersLikedPool,
+      ];
+      const mergedDistractors: MusicTrack[] = [];
+      const seenDistractors = new Set<string>();
+      for (const track of randomShuffle(mergedDistractorCandidates)) {
+        const signature = trackSignature(track);
+        if (answerSignatures.has(signature)) continue;
+        if (seenDistractors.has(signature)) continue;
+        seenDistractors.add(signature);
+        mergedDistractors.push(track);
+      }
+      startPoolStats.distractorTracks = mergedDistractors;
+      startPoolStats.candidateCount = Math.max(
+        startPoolStats.candidateCount,
+        startPoolStats.tracks.length + mergedDistractors.length,
+      );
     }
 
     logEvent("info", "room_start_trackpool_loading_done", {

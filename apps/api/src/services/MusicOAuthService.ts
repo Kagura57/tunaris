@@ -3,6 +3,9 @@ import { Buffer } from "node:buffer";
 import { fetchJsonWithTimeout } from "../routes/music/http";
 import { logEvent } from "../lib/logger";
 import { musicAccountRepository, type MusicProvider } from "../repositories/MusicAccountRepository";
+import { userLibrarySyncRepository } from "../repositories/UserLibrarySyncRepository";
+import { isSpotifySyncQueueConfigured } from "./jobs/spotify-sync-queue";
+import { queueSpotifySyncForUser } from "./jobs/spotify-sync-trigger";
 
 type PendingOAuthState = {
   userId: string;
@@ -272,6 +275,43 @@ export async function handleMusicOAuthCallback(input: {
     userId: pending.userId,
     providerUserId: tokenPayload.providerUserId,
   });
+
+  if (input.provider === "spotify") {
+    try {
+      await userLibrarySyncRepository.upsert({
+        userId: pending.userId,
+        status: "idle",
+        progress: 0,
+        totalTracks: 0,
+        lastError: null,
+        startedAtMs: null,
+        completedAtMs: null,
+      });
+    } catch (error) {
+      logEvent("warn", "music_oauth_spotify_sync_state_reset_failed", {
+        userId: pending.userId,
+        error: error instanceof Error ? error.message : "UNKNOWN_ERROR",
+      });
+    }
+
+    if (isSpotifySyncQueueConfigured()) {
+      try {
+        const queueResult = await queueSpotifySyncForUser(pending.userId);
+        logEvent("info", "music_oauth_spotify_sync_queued", {
+          userId: pending.userId,
+          queued: queueResult.queued,
+          jobId: "jobId" in queueResult ? queueResult.jobId ?? null : null,
+          reason: "reason" in queueResult ? queueResult.reason : null,
+        });
+      } catch (error) {
+        logEvent("warn", "music_oauth_spotify_sync_queue_failed", {
+          userId: pending.userId,
+          error: error instanceof Error ? error.message : "UNKNOWN_ERROR",
+        });
+      }
+    }
+  }
+
   return {
     ok: true as const,
     returnTo: pending.returnTo,

@@ -713,9 +713,9 @@ async function resolveYouTubePlayback(track: MusicTrack): Promise<YouTubePlaybac
       id: best.track.id,
       title: track.title,
       artist: track.artist,
-      // Prefer resolved YouTube duration when available; otherwise unknown.
-      // Using source-provider duration here can cause bad random seeks on mismatched/short clips.
-      durationSec: best.track.durationSec ?? null,
+      // Prefer resolved YouTube duration; fallback to source duration when unavailable so
+      // round start can still be randomized instead of always starting at 0.
+      durationSec: best.track.durationSec ?? track.durationSec ?? null,
       previewUrl: null,
       sourceUrl: best.track.sourceUrl ?? `https://www.youtube.com/watch?v=${best.track.id}`,
     } satisfies MusicTrack;

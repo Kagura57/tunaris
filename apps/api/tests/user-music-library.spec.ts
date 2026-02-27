@@ -219,4 +219,25 @@ describe("spotify liked tracks fetching", () => {
       }),
     ).rejects.toThrowError("SPOTIFY_SYNC_SCOPE_MISSING_USER_LIBRARY_READ");
   });
+
+  it("returns explicit account approval error when spotify rejects non-whitelisted users", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      jsonResponse(
+        {
+          error: {
+            status: 403,
+            message: "User not registered in the Developer Dashboard",
+          },
+        },
+        403,
+      ),
+    ) as unknown as typeof fetch;
+
+    await expect(
+      syncUserLikedTracksLibrary({
+        userId,
+        provider: "spotify",
+      }),
+    ).rejects.toThrowError("SPOTIFY_SYNC_ACCOUNT_NOT_APPROVED");
+  });
 });

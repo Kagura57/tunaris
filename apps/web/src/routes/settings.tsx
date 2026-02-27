@@ -95,6 +95,9 @@ export function SettingsPage() {
     if (code === "SPOTIFY_SYNC_FORBIDDEN") {
       return "Spotify a refuse la synchronisation pour ce compte. Reconnecte Spotify et reessaie.";
     }
+    if (code === "SPOTIFY_SYNC_ACCOUNT_NOT_APPROVED") {
+      return "Ce compte Spotify n'est pas autorise pour cette app Spotify. Ajoute-le dans le dashboard Spotify (utilisateur test), puis reconnecte-le.";
+    }
     if (code === "SPOTIFY_SYNC_BAD_REQUEST") {
       return "Requete Spotify invalide. Reconnecte Spotify puis reessaie.";
     }
@@ -110,12 +113,13 @@ export function SettingsPage() {
       if (!payload || payload.source !== "kwizik-music-oauth") return;
       if (payload.ok === true) {
         void providerLinksQuery.refetch();
+        void librarySyncStatusQuery.refetch();
       }
     }
 
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [providerLinksQuery]);
+  }, [librarySyncStatusQuery, providerLinksQuery]);
 
   const connectMutation = useMutation({
     mutationFn: async (provider: LinkableProvider) => {

@@ -1526,6 +1526,10 @@ export function RoomPlayPage() {
               state.poolBuild.status === "building" &&
               "Préparation de la playlist des joueurs... lancement automatique dès que c'est prêt."}
             {isWaitingLobby &&
+              state?.sourceMode === "players_liked" &&
+              startRetryRemainingMs > 0 &&
+              "Préparation de la playlist des joueurs... lancement automatique dès que c'est prêt."}
+            {isWaitingLobby &&
               state?.sourceMode === "public_playlist" &&
               startRetryRemainingMs > 0 &&
               "Préparation de la playlist... lancement automatique dès que c'est prêt."}

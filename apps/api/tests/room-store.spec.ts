@@ -1022,6 +1022,74 @@ describe("RoomStore gameplay progression", () => {
     });
   });
 
+  it("keeps players_liked round answers youtube-playable when reusing mixed pools", async () => {
+    const playableTracks: MusicTrack[] = Array.from({ length: 10 }, (_, index) => ({
+      provider: "youtube",
+      id: `playable-${index + 1}`,
+      title: `Playable ${index + 1}`,
+      artist: `Playable Artist ${index + 1}`,
+      previewUrl: null,
+      sourceUrl: `https://www.youtube.com/watch?v=playable-${index + 1}`,
+    }));
+    const nonPlayableTracks: MusicTrack[] = Array.from({ length: 120 }, (_, index) => ({
+      provider: "deezer",
+      id: `non-playable-${index + 1}`,
+      title: `Non Playable ${index + 1}`,
+      artist: `Non Playable Artist ${index + 1}`,
+      previewUrl: null,
+      sourceUrl: `https://www.deezer.com/track/non-playable-${index + 1}`,
+    }));
+    const mixedTracks = [...playableTracks, ...nonPlayableTracks];
+
+    let nowMs = 0;
+    const store = new RoomStore({
+      now: () => nowMs,
+      getPlayerLikedTracks: async () => mixedTracks,
+      config: {
+        maxRounds: 10,
+        countdownMs: 5,
+        playingMs: 20,
+        revealMs: 5,
+        leaderboardMs: 5,
+      },
+    });
+
+    for (let iteration = 0; iteration < 5; iteration += 1) {
+      const created = store.createRoom();
+      const host = store.joinRoomAsUser(
+        created.roomCode,
+        `Host ${iteration + 1}`,
+        `user-host-${iteration + 1}`,
+        { spotify: { status: "linked", estimatedTrackCount: 120 } },
+      );
+      if ("status" in host) return;
+
+      const modeSet = store.setRoomSourceMode(created.roomCode, host.playerId, "players_liked");
+      expect(modeSet.status).toBe("ok");
+      const contribution = store.setPlayerLibraryContribution(
+        created.roomCode,
+        host.playerId,
+        "spotify",
+        true,
+      );
+      expect(contribution.status).toBe("ok");
+      const ready = store.setPlayerReady(created.roomCode, host.playerId, true);
+      expect(ready.status).toBe("ok");
+
+      const started = await store.startGame(created.roomCode, host.playerId);
+      expect(started).toMatchObject({
+        ok: true,
+        sourceMode: "players_liked",
+      });
+
+      nowMs += 6;
+      const snapshot = store.roomState(created.roomCode);
+      expect(snapshot?.state).toBe("playing");
+      expect(snapshot?.media?.provider).toBe("youtube");
+      expect(snapshot?.media?.embedUrl).toContain("youtube.com/embed/");
+    }
+  });
+
   it("returns PLAYERS_LIBRARY_SYNCING when players_liked loading times out", async () => {
     const store = new RoomStore({
       getPlayerLikedTracks: async () => {

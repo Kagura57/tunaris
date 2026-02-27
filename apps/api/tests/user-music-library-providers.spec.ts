@@ -171,6 +171,16 @@ describe("fetchUserLikedTracksForProviders", () => {
     });
 
     expect(resolveSpy).not.toHaveBeenCalled();
-    expect(output).toEqual([]);
+    expect(output).toEqual([
+      {
+        provider: "spotify",
+        id: "sp-only-db",
+        title: "DB Song",
+        artist: "DB Artist",
+        durationSec: 200,
+        previewUrl: null,
+        sourceUrl: "https://open.spotify.com/track/sp-only-db",
+      },
+    ]);
   });
 });

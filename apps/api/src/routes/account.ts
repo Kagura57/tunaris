@@ -3,6 +3,7 @@ import { readSessionFromHeaders } from "../auth/client";
 import { musicAccountRepository, type MusicProvider } from "../repositories/MusicAccountRepository";
 import { matchRepository } from "../repositories/MatchRepository";
 import { profileRepository } from "../repositories/ProfileRepository";
+import { userLibrarySyncRepository } from "../repositories/UserLibrarySyncRepository";
 import { buildMusicConnectUrl, handleMusicOAuthCallback } from "../services/MusicOAuthService";
 import { fetchUserLikedTracks, fetchUserPlaylists } from "../services/UserMusicLibrary";
 
@@ -136,6 +137,17 @@ export const accountRoutes = new Elysia({ prefix: "/account" })
     }
 
     await musicAccountRepository.deleteLink(authContext.user.id, provider);
+    if (provider === "spotify") {
+      await userLibrarySyncRepository.upsert({
+        userId: authContext.user.id,
+        status: "idle",
+        progress: 0,
+        totalTracks: 0,
+        lastError: null,
+        startedAtMs: null,
+        completedAtMs: null,
+      });
+    }
     const providers = await musicAccountRepository.listLinkStatuses(authContext.user.id);
     return {
       ok: true as const,
