@@ -31,7 +31,8 @@ export function RootLayout() {
     onSuccess: async () => {
       clearAccount();
       await queryClient.invalidateQueries({ queryKey: ["auth-session"] });
-      await queryClient.invalidateQueries({ queryKey: ["music-provider-links"] });
+      await queryClient.invalidateQueries({ queryKey: ["anilist-link-status"] });
+      await queryClient.invalidateQueries({ queryKey: ["anilist-sync-status"] });
     },
   });
 

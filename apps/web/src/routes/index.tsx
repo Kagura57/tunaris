@@ -173,7 +173,7 @@ export function HomePage() {
         <p className="panel-copy">Crée un lobby en un clic, choisis la visibilité, puis lance la partie.</p>
         {!account.userId && (
           <p className="status">
-            Astuce: connecte-toi pour lier Spotify/Deezer et activer le mode Liked Songs.
+            Astuce: connecte-toi pour lier AniList et synchroniser ta liste anime.
           </p>
         )}
 
@@ -211,7 +211,7 @@ export function HomePage() {
           </div>
 
           <p className="status">
-            Le host choisit la playlist dans le lobby, puis lance seulement quand tout le monde est prêt.
+            Le host configure le mode AniList et les themes, puis lance quand tout le monde est pret.
           </p>
 
           <button
@@ -243,7 +243,7 @@ export function HomePage() {
                       {room.state} · {room.playerCount} joueurs
                     </p>
                     <p>
-                      Mode: {room.sourceMode === "players_liked" ? "Liked Songs joueurs" : "Playlist publique"}
+                      Mode: {room.sourceMode === "anilist_union" ? "AniList lie" : "Anime"}
                       {room.sourceMode === "public_playlist" && room.playlistName
                         ? ` · ${withRomajiLabel(room.playlistName)}`
                         : ""}

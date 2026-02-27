@@ -93,7 +93,7 @@ export function AuthPage() {
       <article className="panel-card">
         <h2 className="panel-title">Compte Kwizik</h2>
         <p className="panel-copy">
-          Connecte-toi pour lier Spotify/Deezer, contribuer tes Liked Songs et gérer ton profil.
+          Connecte-toi pour lier ton compte AniList, synchroniser ta liste et gerer ton profil.
         </p>
 
         {account.userId ? (

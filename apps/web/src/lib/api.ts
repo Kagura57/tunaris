@@ -760,6 +760,60 @@ export async function getAccountHistory() {
   }>("/account/history");
 }
 
+export async function getAniListLinkStatus() {
+  return requestJson<{
+    ok: true;
+    provider: "anilist";
+    status: "linked" | "not_linked" | "expired";
+    link: {
+      anilistUserId: string | null;
+      anilistUsername: string | null;
+      expiresAtMs: number | null;
+      updatedAtMs: number;
+    } | null;
+  }>("/account/anilist/link");
+}
+
+export async function getAniListConnectUrl(input: { returnTo?: string }) {
+  const params = new URLSearchParams();
+  if (input.returnTo && input.returnTo.trim().length > 0) {
+    params.set("returnTo", input.returnTo.trim());
+  }
+  const query = params.toString();
+  return requestJson<{
+    ok: true;
+    provider: "anilist";
+    authorizeUrl: string;
+  }>(`/account/anilist/connect/start${query.length > 0 ? `?${query}` : ""}`);
+}
+
+export async function queueAniListLibrarySync() {
+  return requestJson<{
+    ok: true;
+    status: "accepted";
+    runId: number;
+    jobId: string | null;
+  }>("/account/anilist/sync", {
+    method: "POST",
+  });
+}
+
+export async function getAniListLibrarySyncStatus() {
+  return requestJson<{
+    ok: true;
+    run: {
+      id: number;
+      userId: string;
+      status: "queued" | "running" | "success" | "error";
+      progress: number;
+      message: string | null;
+      startedAtMs: number | null;
+      finishedAtMs: number | null;
+      createdAtMs: number;
+    } | null;
+  }>("/account/anilist/sync/status");
+}
+
 export async function getMusicProviderLinks() {
   return requestJson<{
     ok: true;

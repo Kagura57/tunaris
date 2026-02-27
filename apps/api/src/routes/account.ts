@@ -5,7 +5,11 @@ import { musicAccountRepository, type MusicProvider } from "../repositories/Musi
 import { matchRepository } from "../repositories/MatchRepository";
 import { profileRepository } from "../repositories/ProfileRepository";
 import { userLibrarySyncRepository } from "../repositories/UserLibrarySyncRepository";
-import { buildAniListConnectUrl, handleAniListOAuthCallback } from "../services/AniListOAuthService";
+import {
+  buildAniListConnectUrl,
+  getAniListLinkForUser,
+  handleAniListOAuthCallback,
+} from "../services/AniListOAuthService";
 import { queueAniListSyncForUser } from "../services/jobs/anilist-sync-trigger";
 import { buildMusicConnectUrl, handleMusicOAuthCallback } from "../services/MusicOAuthService";
 import { fetchUserLikedTracks, fetchUserPlaylists } from "../services/UserMusicLibrary";
@@ -82,6 +86,34 @@ export const accountRoutes = new Elysia({ prefix: "/account" })
       ok: true as const,
       provider: "anilist" as const,
       authorizeUrl: connect.url,
+    };
+  })
+  .get("/anilist/link", async ({ headers, set }) => {
+    const authContext = await requireSession(headers as unknown, set);
+    if (!authContext) {
+      return { ok: false, error: "UNAUTHORIZED" };
+    }
+
+    const link = await getAniListLinkForUser(authContext.user.id);
+    const nowMs = Date.now();
+    const status = !link
+      ? "not_linked"
+      : typeof link.expiresAtMs === "number" && link.expiresAtMs > 0 && link.expiresAtMs <= nowMs
+        ? "expired"
+        : "linked";
+
+    return {
+      ok: true as const,
+      provider: "anilist" as const,
+      status,
+      link: link
+        ? {
+            anilistUserId: link.anilistUserId,
+            anilistUsername: link.anilistUsername,
+            expiresAtMs: link.expiresAtMs,
+            updatedAtMs: link.updatedAtMs,
+          }
+        : null,
     };
   })
   .get("/anilist/connect/callback", async ({ query, set }) => {
