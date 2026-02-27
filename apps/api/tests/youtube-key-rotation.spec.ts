@@ -339,4 +339,200 @@ describe("youtube key rotation", () => {
     const tracks = await searchYouTube("no synthetic", 3);
     expect(tracks).toEqual([]);
   });
+
+  it("still attempts fallback during api backoff even when fallback backoff is active", async () => {
+    readEnvVarMock.mockImplementation((key) => {
+      if (key === "YOUTUBE_API_KEY") return "quota-key";
+      if (key === "YOUTUBE_INVIDIOUS_INSTANCES") return "https://inv.example";
+      return undefined;
+    });
+
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+
+      if (url.hostname.includes("googleapis.com")) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              error: {
+                code: 403,
+                message: "quotaExceeded",
+              },
+            },
+            403,
+          ),
+        );
+      }
+
+      if (url.hostname === "inv.example" && url.pathname === "/api/v1/search") {
+        const query = url.searchParams.get("q");
+        if (query === "prime backoff") return Promise.resolve(jsonResponse([]));
+        if (query === "recover during api backoff") {
+          return Promise.resolve(
+            jsonResponse([
+              {
+                type: "video",
+                videoId: "inv-recover-1",
+                title: "Recovered Song",
+                author: "Recovered Artist",
+              },
+            ]),
+          );
+        }
+        return Promise.resolve(jsonResponse([]));
+      }
+
+      if (url.hostname === "www.youtube.com" && url.pathname === "/results") {
+        return Promise.resolve(new Response("<html><body></body></html>", { status: 200 }));
+      }
+
+      if (url.hostname === "www.youtube.com" && url.pathname === "/oembed") {
+        return Promise.resolve(jsonResponse({}, 404));
+      }
+
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const primed = await searchYouTube("prime backoff", 5);
+    expect(primed).toEqual([]);
+
+    const recovered = await searchYouTube("recover during api backoff", 5);
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]).toMatchObject({
+      provider: "youtube",
+      id: "inv-recover-1",
+      title: "Recovered Song",
+      artist: "Recovered Artist",
+    });
+  });
+
+  it("uses short miss cache ttl while youtube api is unavailable so same-query retries can recover", async () => {
+    readEnvVarMock.mockImplementation((key) => {
+      if (key === "YOUTUBE_API_KEY") return "quota-key";
+      if (key === "YOUTUBE_INVIDIOUS_INSTANCES") return "https://inv.example";
+      return undefined;
+    });
+
+    let nowMs = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+    let invidiousAttempts = 0;
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.hostname.includes("googleapis.com")) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              error: {
+                code: 403,
+                message: "quotaExceeded",
+              },
+            },
+            403,
+          ),
+        );
+      }
+
+      if (url.hostname === "inv.example" && url.pathname === "/api/v1/search") {
+        invidiousAttempts += 1;
+        if (invidiousAttempts === 1) return Promise.resolve(jsonResponse([]));
+        return Promise.resolve(
+          jsonResponse([
+            {
+              type: "video",
+              videoId: "inv-retry-1",
+              title: "Retry Success",
+              author: "Retry Artist",
+            },
+          ]),
+        );
+      }
+
+      if (url.hostname === "www.youtube.com" && url.pathname === "/results") {
+        return Promise.resolve(new Response("<html><body></body></html>", { status: 200 }));
+      }
+
+      if (url.hostname === "www.youtube.com" && url.pathname === "/oembed") {
+        return Promise.resolve(jsonResponse({}, 404));
+      }
+
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const first = await searchYouTube("same query transient miss", 5);
+    expect(first).toEqual([]);
+
+    nowMs += 4_000;
+    const second = await searchYouTube("same query transient miss", 5);
+    expect(second).toEqual([]);
+
+    nowMs += 1_500;
+    const third = await searchYouTube("same query transient miss", 5);
+    expect(third).toHaveLength(1);
+    expect(third[0]).toMatchObject({
+      provider: "youtube",
+      id: "inv-retry-1",
+      title: "Retry Success",
+      artist: "Retry Artist",
+    });
+  });
+
+  it("skips invidious fallback when YOUTUBE_DISABLE_INVIDIOUS is enabled", async () => {
+    readEnvVarMock.mockImplementation((key) => {
+      if (key === "YOUTUBE_API_KEY") return "quota-key";
+      if (key === "YOUTUBE_DISABLE_INVIDIOUS") return "1";
+      return undefined;
+    });
+
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.hostname.includes("googleapis.com")) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              error: {
+                code: 403,
+                message: "quotaExceeded",
+              },
+            },
+            403,
+          ),
+        );
+      }
+
+      if (url.hostname === "www.youtube.com" && url.pathname === "/results") {
+        return Promise.resolve(
+          new Response('<html><body>"videoId":"webvideo123"</body></html>', {
+            status: 200,
+            headers: { "content-type": "text/html" },
+          }),
+        );
+      }
+
+      if (url.hostname === "www.youtube.com" && url.pathname === "/oembed") {
+        return Promise.resolve(
+          jsonResponse({
+            title: "Web Only Song",
+            author_name: "Web Only Artist",
+          }),
+        );
+      }
+
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const tracks = await searchYouTube("web only mode", 5);
+    expect(tracks).toHaveLength(1);
+    expect(tracks[0]).toMatchObject({
+      provider: "youtube",
+      id: "webvideo123",
+      title: "Web Only Song",
+      artist: "Web Only Artist",
+    });
+
+    const calledUrls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(calledUrls.some((url) => url.includes("/api/v1/search"))).toBe(false);
+  });
 });

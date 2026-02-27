@@ -586,6 +586,10 @@ function dedupeTracks(tracks: MusicTrack[], size: number) {
   return deduped;
 }
 
+function sourceSignature(track: Pick<MusicTrack, "title" | "artist">) {
+  return `${track.title.toLowerCase()}::${track.artist.toLowerCase()}`;
+}
+
 export async function fetchUserLikedTracks(
   userId: string,
   provider: MusicProvider,
@@ -632,8 +636,31 @@ export async function fetchUserLikedTracksForProviders(input: {
 
   const merged = [...mergedSourceTracks.values()];
   const fetchedCount = merged.length;
-  const deduped = dedupeTracks(merged, Math.max(safeSize * 3, safeSize));
-  const playable = await resolveTracksToPlayableYouTube(deduped, safeSize);
+  const initialDedupeLimit = Math.max(safeSize * 3, safeSize);
+  const deduped = dedupeTracks(merged, initialDedupeLimit);
+  let playable = await resolveTracksToPlayableYouTube(deduped, safeSize);
+  let expandedDedupedCount = deduped.length;
+  let topUpResolvedCount = 0;
+  let secondPassTriggered = false;
+
+  if (playable.length < safeSize && deduped.length < merged.length) {
+    secondPassTriggered = true;
+    const expandedDedupeLimit = Math.min(
+      merged.length,
+      Math.max(initialDedupeLimit + safeSize, safeSize * 8, safeSize + 120),
+    );
+    const expandedDeduped = dedupeTracks(merged, expandedDedupeLimit);
+    expandedDedupedCount = expandedDeduped.length;
+    const alreadyAttempted = new Set(deduped.map((track) => sourceSignature(track)));
+    const overflowCandidates = expandedDeduped.filter((track) => !alreadyAttempted.has(sourceSignature(track)));
+    const needed = Math.max(0, safeSize - playable.length);
+    if (needed > 0 && overflowCandidates.length > 0) {
+      const topUp = await resolveTracksToPlayableYouTube(overflowCandidates, needed);
+      topUpResolvedCount = topUp.length;
+      playable = dedupeTracks([...playable, ...topUp], safeSize);
+    }
+  }
+
   logEvent("info", "user_liked_tracks_resolved_from_synced_library", {
     userId,
     providers,
@@ -644,6 +671,9 @@ export async function fetchUserLikedTracksForProviders(input: {
     fetchCountsByAttempt,
     syncedFetchedCount: fetchedCount,
     dedupedCount: deduped.length,
+    expandedDedupedCount,
+    secondPassTriggered,
+    topUpResolvedCount,
     playableCount: playable.length,
   });
   return playable;

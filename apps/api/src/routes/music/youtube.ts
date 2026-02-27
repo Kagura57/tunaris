@@ -77,6 +77,7 @@ const YOUTUBE_KEY_COOLDOWN_MS = 30 * 60_000;
 const YOUTUBE_FALLBACK_BACKOFF_MS = 5 * 60_000;
 const YOUTUBE_QUERY_CACHE_TTL_MS = 6 * 60 * 60_000;
 const YOUTUBE_QUERY_MISS_CACHE_TTL_MS = 90_000;
+const YOUTUBE_QUERY_MISS_CACHE_TRANSIENT_TTL_MS = 5_000;
 const YOUTUBE_INVIDIOUS_TIMEOUT_MS = 2_500;
 const YOUTUBE_WEB_SEARCH_TIMEOUT_MS = 3_500;
 const YOUTUBE_OEMBED_TIMEOUT_MS = 2_500;
@@ -203,6 +204,12 @@ function readInvidiousInstances(useDefaults: boolean) {
     normalized.push(candidate);
   }
   return normalized;
+}
+
+function readInvidiousEnabled() {
+  const raw = (readEnvVar("YOUTUBE_DISABLE_INVIDIOUS") ?? "").trim().toLowerCase();
+  if (!raw) return true;
+  return !(raw === "1" || raw === "true" || raw === "yes" || raw === "on");
 }
 
 function orderedInstancesForAttempt(instances: string[]) {
@@ -789,30 +796,15 @@ export async function searchYouTube(query: string, limit = 10): Promise<MusicTra
   }
 
   const configuredInvidiousInstances = readConfiguredInvidiousInstances();
+  const invidiousEnabled = readInvidiousEnabled();
   const allKeysCoolingDown = apiKeys.length > 0 && keysSkippedByCooldown >= apiKeys.length;
   const apiKeysUnavailable =
     apiKeys.length > 0 && (apiBackoffActiveAtStart || apiErrorCount > 0 || allKeysCoolingDown);
   const allowDefaultInvidious = apiKeys.length <= 0 || apiKeysUnavailable;
   let invidiousResult: InvidiousSearchResult | null = null;
   let webResult: WebSearchResult | null = null;
-  if (youtubeFallbackBackoffUntilMs <= Date.now()) {
-    invidiousResult = await searchYouTubeViaInvidious(normalizedQuery, safeLimit, {
-      allowDefaultInstances: allowDefaultInvidious,
-    });
-    if (invidiousResult.tracks.length > 0) {
-      youtubeFallbackBackoffUntilMs = 0;
-      writeCachedQuery(normalizedQuery, safeLimit, invidiousResult.tracks);
-      logEvent("info", "youtube_search_success", {
-        query: normalizedQuery,
-        limit: safeLimit,
-        source: "invidious",
-        trackCount: invidiousResult.tracks.length,
-        invidiousAttemptCount: invidiousResult.attempts.length,
-        invidiousUsedDefaultInstances: invidiousResult.usedDefaultInstances,
-      });
-      return invidiousResult.tracks;
-    }
-
+  const shouldAttemptFallback = youtubeFallbackBackoffUntilMs <= Date.now() || apiKeysUnavailable;
+  if (shouldAttemptFallback) {
     webResult = await searchYouTubeViaWeb(normalizedQuery, safeLimit);
     if (webResult.tracks.length > 0) {
       youtubeFallbackBackoffUntilMs = 0;
@@ -829,7 +821,26 @@ export async function searchYouTube(query: string, limit = 10): Promise<MusicTra
       return webResult.tracks;
     }
 
-    if (configuredInvidiousInstances.length > 0 || allowDefaultInvidious) {
+    if (invidiousEnabled) {
+      invidiousResult = await searchYouTubeViaInvidious(normalizedQuery, safeLimit, {
+        allowDefaultInstances: allowDefaultInvidious,
+      });
+      if (invidiousResult.tracks.length > 0) {
+        youtubeFallbackBackoffUntilMs = 0;
+        writeCachedQuery(normalizedQuery, safeLimit, invidiousResult.tracks);
+        logEvent("info", "youtube_search_success", {
+          query: normalizedQuery,
+          limit: safeLimit,
+          source: "invidious",
+          trackCount: invidiousResult.tracks.length,
+          invidiousAttemptCount: invidiousResult.attempts.length,
+          invidiousUsedDefaultInstances: invidiousResult.usedDefaultInstances,
+        });
+        return invidiousResult.tracks;
+      }
+    }
+
+    if (invidiousEnabled && (configuredInvidiousInstances.length > 0 || allowDefaultInvidious)) {
       youtubeFallbackBackoffUntilMs = Date.now() + YOUTUBE_FALLBACK_BACKOFF_MS;
     }
   }
@@ -838,7 +849,12 @@ export async function searchYouTube(query: string, limit = 10): Promise<MusicTra
     youtubeSearchBackoffUntilMs = Date.now() + YOUTUBE_FAILURE_BACKOFF_MS;
   }
 
-  writeCachedQuery(normalizedQuery, safeLimit, [], YOUTUBE_QUERY_MISS_CACHE_TTL_MS);
+  const transientQueryMiss =
+    apiBackoffActiveAtStart || apiKeysUnavailable || apiErrorCount > 0 || !apiReceivedResponse;
+  const queryMissCacheTtlMs = transientQueryMiss
+    ? YOUTUBE_QUERY_MISS_CACHE_TRANSIENT_TTL_MS
+    : YOUTUBE_QUERY_MISS_CACHE_TTL_MS;
+  writeCachedQuery(normalizedQuery, safeLimit, [], queryMissCacheTtlMs);
   logEvent("warn", "youtube_search_empty", {
     query: normalizedQuery,
     limit: safeLimit,
@@ -855,6 +871,7 @@ export async function searchYouTube(query: string, limit = 10): Promise<MusicTra
     ytmusicStatus: ytmusicResult.status,
     ytmusicErrorDetail: ytmusicResult.errorDetail,
     ytmusicTrackCount: ytmusicResult.tracks.length,
+    invidiousEnabled,
     allowDefaultInvidious,
     configuredInvidiousInstanceCount: configuredInvidiousInstances.length,
     invidiousUsedDefaultInstances: invidiousResult?.usedDefaultInstances ?? false,
@@ -874,6 +891,8 @@ export async function searchYouTube(query: string, limit = 10): Promise<MusicTra
     webOembedSuccesses: webResult?.oembedSuccesses ?? 0,
     webOembedErrorCount: webResult?.oembedErrorCount ?? 0,
     webFirstOembedError: webResult?.firstOembedError ?? null,
+    transientQueryMiss,
+    queryMissCacheTtlMs,
     fallbackBackoffUntilMs: youtubeFallbackBackoffUntilMs,
   });
   return [];

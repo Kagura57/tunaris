@@ -118,6 +118,13 @@ const TRACK_POOL_TARGET_MULTIPLIER = 5;
 const TRACK_POOL_MIN_CANDIDATES = 24;
 const TRACK_POOL_MAX_CANDIDATES = 100;
 const PLAYERS_LIKED_REBUILD_COOLDOWN_MS = 15_000;
+const YOUTUBE_RANDOM_START_MIN_SEC = 18;
+const YOUTUBE_RANDOM_START_FALLBACK_MAX_SEC = 45;
+const YOUTUBE_RANDOM_START_END_BUFFER_SEC = 20;
+const YOUTUBE_RANDOM_START_MIN_DURATION_SEC = 45;
+const MCQ_REQUIRED_CHOICES = 4;
+const START_POOL_RETRY_ATTEMPTS = 3;
+const START_POOL_RETRY_DELAY_MS = 900;
 
 type RoundConfig = typeof DEFAULT_ROUND_CONFIG;
 
@@ -396,12 +403,55 @@ function looksLikePromotionalTrack(track: Pick<MusicTrack, "title" | "artist">) 
   return TRACK_PROMOTION_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-function embedUrlForTrack(track: Pick<MusicTrack, "provider" | "id">) {
+function stableHash(value: string) {
+  let hash = 2_166_136_261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return hash >>> 0;
+}
+
+function deterministicIntFromSeed(seed: string, min: number, max: number) {
+  const safeMin = Math.max(0, Math.floor(min));
+  const safeMax = Math.max(safeMin, Math.floor(max));
+  const size = safeMax - safeMin + 1;
+  if (size <= 1) return safeMin;
+  return safeMin + (stableHash(seed) % size);
+}
+
+function youtubeRoundStartSeconds(
+  track: Pick<MusicTrack, "id" | "durationSec">,
+  context: { roomCode: string; round: number },
+) {
+  const durationSec =
+    typeof track.durationSec === "number" && Number.isFinite(track.durationSec)
+      ? Math.max(0, Math.floor(track.durationSec))
+      : null;
+
+  if (durationSec !== null && durationSec < YOUTUBE_RANDOM_START_MIN_DURATION_SEC) {
+    return 0;
+  }
+
+  const minStart = YOUTUBE_RANDOM_START_MIN_SEC;
+  const maxStart =
+    durationSec !== null
+      ? Math.max(minStart, durationSec - YOUTUBE_RANDOM_START_END_BUFFER_SEC)
+      : YOUTUBE_RANDOM_START_FALLBACK_MAX_SEC;
+  const seed = `${context.roomCode}:${context.round}:${track.id}`;
+  return deterministicIntFromSeed(seed, minStart, maxStart);
+}
+
+function embedUrlForTrack(
+  track: Pick<MusicTrack, "provider" | "id" | "durationSec">,
+  context?: { roomCode: string; round: number },
+) {
   if (track.provider === "spotify") {
     return `https://open.spotify.com/embed/track/${track.id}?utm_source=kwizik`;
   }
   if (track.provider === "youtube") {
-    return `https://www.youtube.com/embed/${track.id}?autoplay=1&controls=0&disablekb=1&iv_load_policy=3&modestbranding=1&playsinline=1&rel=0&fs=0&enablejsapi=1`;
+    const start = context ? youtubeRoundStartSeconds(track, context) : 0;
+    return `https://www.youtube.com/embed/${track.id}?autoplay=1&controls=0&disablekb=1&iv_load_policy=3&modestbranding=1&playsinline=1&rel=0&fs=0&enablejsapi=1&start=${start}`;
   }
   if (track.provider === "deezer") {
     return `https://widget.deezer.com/widget/dark/track/${track.id}`;
@@ -440,6 +490,12 @@ async function withTimeout<T>(
         reject(error);
       },
     );
+  });
+}
+
+async function sleepMs(ms: number) {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
   });
 }
 
@@ -625,7 +681,8 @@ export class RoomStore {
 
     const correct = asChoiceLabel(track);
     const sourceProfile = buildChoiceProfile(track);
-    const distractorCandidates = session.distractorTrackPool
+    const futureRoundTracks = session.trackPool.slice(round);
+    const distractorCandidates = [...futureRoundTracks, ...session.distractorTrackPool]
       .filter((candidate) => asChoiceLabel(candidate) !== correct)
       .map((candidate) => ({
         label: asChoiceLabel(candidate),
@@ -645,16 +702,7 @@ export class RoomStore {
       if (seen.has(distractor.label)) continue;
       uniqueOptions.push(distractor.label);
       seen.add(distractor.label);
-      if (uniqueOptions.length >= 4) break;
-    }
-
-    let syntheticIndex = 1;
-    while (uniqueOptions.length < 4) {
-      const syntheticChoice = `Choix alternatif ${round}-${syntheticIndex}`;
-      syntheticIndex += 1;
-      if (seen.has(syntheticChoice)) continue;
-      uniqueOptions.push(syntheticChoice);
-      seen.add(syntheticChoice);
+      if (uniqueOptions.length >= MCQ_REQUIRED_CHOICES) break;
     }
 
     const options = randomShuffle(uniqueOptions);
@@ -828,12 +876,12 @@ export class RoomStore {
             return;
           }
           session.playersLikedPool = [...built.tracks, ...built.distractorTracks];
-          session.poolBuild.status = built.tracks.length > 0 ? "ready" : "failed";
+          session.poolBuild.status = built.tracks.length >= desiredSize ? "ready" : "failed";
           session.poolBuild.contributorsCount = built.contributorsCount;
           session.poolBuild.mergedTracksCount = built.playableTotal;
           session.poolBuild.playableTracksCount = built.candidateCount;
           session.poolBuild.lastBuiltAtMs = this.now();
-          session.poolBuild.errorCode = built.tracks.length > 0 ? null : "NO_TRACKS_FOUND";
+          session.poolBuild.errorCode = built.tracks.length >= desiredSize ? null : "NO_TRACKS_FOUND";
         } catch (error) {
           session.playersLikedPool = [];
           session.poolBuild.status = "failed";
@@ -1028,7 +1076,7 @@ export class RoomStore {
           acceptedAnswer: asChoiceLabel(track),
           previewUrl: track.previewUrl,
           sourceUrl: track.sourceUrl,
-          embedUrl: embedUrlForTrack(track),
+          embedUrl: embedUrlForTrack(track, { roomCode: session.roomCode, round: round.round }),
           choices: roundChoices,
         }
       : null;
@@ -1576,6 +1624,27 @@ export class RoomStore {
           ? await this.buildPlayersLikedTrackPool(session, poolSize)
           : await this.buildStartTrackPool(resolvedQuery, poolSize),
       );
+      for (
+        let retryAttempt = 2;
+        startPoolStats.tracks.length < poolSize && retryAttempt <= START_POOL_RETRY_ATTEMPTS;
+        retryAttempt += 1
+      ) {
+        await sleepMs(START_POOL_RETRY_DELAY_MS);
+        logEvent("info", "room_start_trackpool_retry", {
+          roomCode,
+          categoryQuery: resolvedQuery,
+          requestedRounds: poolSize,
+          retryAttempt,
+          selectedPoolSize: startPoolStats.tracks.length,
+          candidatePoolSize: startPoolStats.candidateCount,
+        });
+        startPoolStats = await this.resolveTracksWithFlag(
+          session,
+          async () => session.sourceMode === "players_liked"
+            ? await this.buildPlayersLikedTrackPool(session, poolSize)
+            : await this.buildStartTrackPool(resolvedQuery, poolSize),
+        );
+      }
     } catch (error) {
       if (error instanceof Error && error.message === SPOTIFY_RATE_LIMITED_ERROR) {
         return {
@@ -1619,17 +1688,17 @@ export class RoomStore {
     session.distractorTrackPool = startPoolStats.distractorTracks;
     if (session.sourceMode === "players_liked") {
       session.playersLikedPool = [...startPoolStats.tracks, ...startPoolStats.distractorTracks];
-      session.poolBuild.status = startPoolStats.tracks.length > 0 ? "ready" : "failed";
+      session.poolBuild.status = startPoolStats.tracks.length >= poolSize ? "ready" : "failed";
       session.poolBuild.contributorsCount = this.playersLikedContributors(session).length;
       session.poolBuild.mergedTracksCount = startPoolStats.playableTotal;
       session.poolBuild.playableTracksCount = startPoolStats.candidateCount;
       session.poolBuild.lastBuiltAtMs = this.now();
-      session.poolBuild.errorCode = startPoolStats.tracks.length > 0 ? null : "NO_TRACKS_FOUND";
+      session.poolBuild.errorCode = startPoolStats.tracks.length >= poolSize ? null : "NO_TRACKS_FOUND";
     }
     session.latestReveal = null;
     this.refreshRoundPlan(session);
 
-    if (session.totalRounds <= 0 || session.trackPool.length <= 0) {
+    if (session.totalRounds < poolSize || session.trackPool.length < poolSize) {
       if (
         session.sourceMode === "public_playlist" &&
         resolvedQuery.toLowerCase().startsWith("spotify:") &&
@@ -1650,7 +1719,7 @@ export class RoomStore {
         selectedPoolSize: session.trackPool.length,
         distractorPoolSize: session.distractorTrackPool.length,
         candidatePoolSize: startPoolStats.candidateCount,
-        missingTracks: 0,
+        missingTracks: Math.max(0, poolSize - session.trackPool.length),
         preparedRounds: session.totalRounds,
         rawTrackPoolSize: startPoolStats.rawTotal,
         playablePoolSize: startPoolStats.playableTotal,
@@ -1667,7 +1736,19 @@ export class RoomStore {
 
     session.roundChoices.clear();
     for (let round = 1; round <= session.totalRounds; round += 1) {
-      if (session.roundModes[round - 1] === "mcq") this.buildRoundChoices(session, round);
+      if (session.roundModes[round - 1] !== "mcq") continue;
+      const roundChoices = this.buildRoundChoices(session, round);
+      if (roundChoices.length >= MCQ_REQUIRED_CHOICES) continue;
+      session.roundModes[round - 1] = "text";
+      session.roundChoices.delete(round);
+      logEvent("info", "room_start_round_mode_adjusted", {
+        roomCode,
+        categoryQuery: resolvedQuery,
+        round,
+        fromMode: "mcq",
+        toMode: "text",
+        choiceCount: roundChoices.length,
+      });
     }
     for (const track of session.trackPool) {
       scheduleRomanizeJapanese(track.title);
@@ -1887,7 +1968,7 @@ export class RoomStore {
             provider: activeTrack.provider,
             trackId: activeTrack.id,
             sourceUrl: activeTrack.sourceUrl,
-            embedUrl: embedUrlForTrack(activeTrack),
+            embedUrl: embedUrlForTrack(activeTrack, { roomCode: session.roomCode, round: currentRound }),
           }
         : revealMedia
           ? {

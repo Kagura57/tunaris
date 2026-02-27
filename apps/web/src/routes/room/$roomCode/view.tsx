@@ -39,7 +39,7 @@ function withRomajiLabel(value: string, providedRomaji?: string | null) {
   if (!value) return value;
   const romaji = providedRomaji?.trim().length ? providedRomaji.trim() : toRomaji(value).trim();
   if (!romaji || romaji.toLowerCase() === value.toLowerCase()) return value;
-  return `${value} · ${romaji}`;
+  return romaji;
 }
 
 export function RoomViewPage() {

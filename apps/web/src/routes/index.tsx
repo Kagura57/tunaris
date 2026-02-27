@@ -1,15 +1,15 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { isJapanese, toRomaji } from "wanakana";
+import { toRomaji } from "wanakana";
 import { createRoom, getPublicRooms, joinRoom } from "../lib/api";
 import { useGameStore } from "../stores/gameStore";
 
 function withRomajiLabel(value: string) {
-  if (!value || !isJapanese(value)) return value;
-  const romaji = toRomaji(value);
+  if (!value) return value;
+  const romaji = toRomaji(value).trim();
   if (!romaji || romaji.toLowerCase() === value.toLowerCase()) return value;
-  return `${value} · ${romaji}`;
+  return romaji;
 }
 
 export function HomePage() {

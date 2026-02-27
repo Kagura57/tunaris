@@ -787,3 +787,27 @@ export async function searchPlaylistsAcrossProviders(input: { q: string; limit?:
     playlists: UnifiedPlaylistOption[];
   }>(`/music/playlists/search?${params.toString()}`);
 }
+
+export async function searchTracksAcrossProviders(input: { q: string; limit?: number }) {
+  const params = new URLSearchParams();
+  params.set("q", input.q.trim());
+  if (typeof input.limit === "number") {
+    params.set("limit", String(input.limit));
+  }
+
+  return requestJson<{
+    query: string;
+    limit: number;
+    fallback: Array<{
+      provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube";
+      id: string;
+      title: string;
+      artist: string;
+      durationSec?: number | null;
+      previewUrl: string | null;
+      sourceUrl: string | null;
+    }>;
+    results: Record<string, unknown[]>;
+    providerErrors: Record<string, string>;
+  }>(`/music/search?${params.toString()}`);
+}

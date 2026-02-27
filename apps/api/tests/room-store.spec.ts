@@ -19,6 +19,22 @@ const FIXTURE_TRACKS: MusicTrack[] = [
     previewUrl: null,
     sourceUrl: "https://www.youtube.com/watch?v=t2",
   },
+  {
+    provider: "youtube",
+    id: "t3",
+    title: "Gamma Drive",
+    artist: "Polar Night",
+    previewUrl: null,
+    sourceUrl: "https://www.youtube.com/watch?v=t3",
+  },
+  {
+    provider: "youtube",
+    id: "t4",
+    title: "Delta Pulse",
+    artist: "Aurora Static",
+    previewUrl: null,
+    sourceUrl: "https://www.youtube.com/watch?v=t4",
+  },
 ];
 
 const YOUTUBE_ONLY_TRACKS: MusicTrack[] = [
@@ -91,6 +107,22 @@ const MCQ_NO_REPEAT_DISTRACTOR_TRACKS: MusicTrack[] = [
     artist: "Delta Run",
     previewUrl: null,
     sourceUrl: "https://www.youtube.com/watch?v=mcq-4",
+  },
+  {
+    provider: "youtube",
+    id: "mcq-5",
+    title: "Hyperlane Dream",
+    artist: "Vector Echo",
+    previewUrl: null,
+    sourceUrl: "https://www.youtube.com/watch?v=mcq-5",
+  },
+  {
+    provider: "youtube",
+    id: "mcq-6",
+    title: "Prism Flight",
+    artist: "Ion Harbor",
+    previewUrl: null,
+    sourceUrl: "https://www.youtube.com/watch?v=mcq-6",
   },
 ];
 
@@ -183,6 +215,19 @@ function deferred<T>() {
     resolve = nextResolve;
   });
   return { promise, resolve };
+}
+
+function youtubeStartFromEmbed(embedUrl: string | null | undefined) {
+  if (!embedUrl) return null;
+  try {
+    const url = new URL(embedUrl);
+    const raw = url.searchParams.get("start");
+    if (!raw) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 describe("RoomStore gameplay progression", () => {
@@ -396,7 +441,7 @@ describe("RoomStore gameplay progression", () => {
     expect(round3Playing?.choices?.includes(round1Label)).toBe(false);
   });
 
-  it("always returns 4 unique MCQ choices even when distractors are scarce", async () => {
+  it("downgrades MCQ to text when coherent distractors are insufficient", async () => {
     let nowMs = 0;
     const singleTrack: MusicTrack[] = [
       {
@@ -433,13 +478,8 @@ describe("RoomStore gameplay progression", () => {
     nowMs = 5;
     const playing = store.roomState(roomCode);
     expect(playing?.state).toBe("playing");
-    expect(playing?.mode).toBe("mcq");
-    const choices = playing?.choices ?? [];
-    expect(choices).toHaveLength(4);
-    expect(new Set(choices).size).toBe(4);
-    expect(
-      choices.filter((choice) => choice === "Walking On A Dream - Empire Of The Sun"),
-    ).toHaveLength(1);
+    expect(playing?.mode).toBe("text");
+    expect(playing?.choices ?? []).toHaveLength(0);
   });
 
   it("builds MCQ choices with coherent language distractors when enough candidates exist", async () => {
@@ -517,6 +557,58 @@ describe("RoomStore gameplay progression", () => {
     expect(playing?.previewUrl).toBeNull();
     expect(playing?.media?.provider).toBe("youtube");
     expect(playing?.media?.embedUrl).toContain("youtube.com/embed/yt1");
+  });
+
+  it("uses a stable randomized youtube start offset during a round", async () => {
+    let nowMs = 0;
+    const timedYouTubeTrack: MusicTrack[] = [
+      {
+        provider: "youtube",
+        id: "yt-start-1",
+        title: "Late Intro Anthem",
+        artist: "Signal Drive",
+        durationSec: 210,
+        previewUrl: null,
+        sourceUrl: "https://www.youtube.com/watch?v=yt-start-1",
+      },
+    ];
+    const store = new RoomStore({
+      now: () => nowMs,
+      getTrackPool: async () => timedYouTubeTrack,
+      config: {
+        countdownMs: 5,
+        playingMs: 50,
+        revealMs: 5,
+        leaderboardMs: 5,
+        maxRounds: 1,
+      },
+    });
+
+    const { roomCode } = store.createRoom();
+    const player = store.joinRoom(roomCode, "Solo");
+    expect(player.status).toBe("ok");
+    if (player.status !== "ok") return;
+
+    const sourceSet = store.setRoomSource(roomCode, player.value.playerId, "youtube random start");
+    expect(sourceSet.status).toBe("ok");
+    const ready = store.setPlayerReady(roomCode, player.value.playerId, true);
+    expect(ready.status).toBe("ok");
+    await store.startGame(roomCode, player.value.playerId);
+
+    nowMs = 5;
+    const playingFirst = store.roomState(roomCode);
+    const playingSecond = store.roomState(roomCode);
+    const startFirst = youtubeStartFromEmbed(playingFirst?.media?.embedUrl);
+    const startSecond = youtubeStartFromEmbed(playingSecond?.media?.embedUrl);
+    expect(startFirst).not.toBeNull();
+    expect(startSecond).toBe(startFirst);
+    expect(startFirst ?? 0).toBeGreaterThanOrEqual(18);
+    expect(startFirst ?? 0).toBeLessThanOrEqual(190);
+
+    nowMs = 55;
+    const reveal = store.roomState(roomCode);
+    const revealStart = youtubeStartFromEmbed(reveal?.reveal?.embedUrl);
+    expect(revealStart).toBe(startFirst);
   });
 
   it("accepts late joins while game is running", async () => {
@@ -698,6 +790,56 @@ describe("RoomStore gameplay progression", () => {
     expect(playing?.mode).toBe("mcq");
     expect(playing?.choices).toHaveLength(4);
     expect((playing?.choices ?? []).some((choice) => choice.startsWith("Choix alternatif"))).toBe(false);
+  });
+
+  it("refuses to start when fetched track pool is below configured max rounds", async () => {
+    const store = new RoomStore({
+      getTrackPool: async () => [
+        {
+          provider: "youtube",
+          id: "few-1",
+          title: "Few One",
+          artist: "Tiny Pool",
+          previewUrl: null,
+          sourceUrl: "https://www.youtube.com/watch?v=few-1",
+        },
+        {
+          provider: "youtube",
+          id: "few-2",
+          title: "Few Two",
+          artist: "Tiny Pool",
+          previewUrl: null,
+          sourceUrl: "https://www.youtube.com/watch?v=few-2",
+        },
+        {
+          provider: "youtube",
+          id: "few-3",
+          title: "Few Three",
+          artist: "Tiny Pool",
+          previewUrl: null,
+          sourceUrl: "https://www.youtube.com/watch?v=few-3",
+        },
+      ],
+      config: {
+        maxRounds: 10,
+      },
+    });
+
+    const created = store.createRoom();
+    const host = store.joinRoom(created.roomCode, "Host");
+    expect(host.status).toBe("ok");
+    if (host.status !== "ok") return;
+
+    const sourceSet = store.setRoomSource(created.roomCode, host.value.playerId, "few tracks");
+    expect(sourceSet.status).toBe("ok");
+    const ready = store.setPlayerReady(created.roomCode, host.value.playerId, true);
+    expect(ready.status).toBe("ok");
+
+    const started = await store.startGame(created.roomCode, host.value.playerId);
+    expect(started).toMatchObject({
+      ok: false,
+      error: "NO_TRACKS_FOUND",
+    });
   });
 
   it("supports players_liked mode with linked provider contributions", async () => {

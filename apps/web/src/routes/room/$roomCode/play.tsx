@@ -8,6 +8,7 @@ import {
   leaveRoom as leaveRoomApi,
   replayRoom,
   searchPlaylistsAcrossProviders,
+  searchTracksAcrossProviders,
   sendRoomChatMessage,
   setPlayerReady,
   setRoomPublicPlaylist,
@@ -79,7 +80,7 @@ function withRomajiLabel(value: string, providedRomaji?: string | null) {
   if (!value) return value;
   const romaji = providedRomaji?.trim().length ? providedRomaji.trim() : toRomaji(value).trim();
   if (!romaji || romaji.toLowerCase() === value.toLowerCase()) return value;
-  return `${value} · ${romaji}`;
+  return romaji;
 }
 
 function revealArtworkUrl(reveal: {
@@ -156,6 +157,7 @@ export function RoomPlayPage() {
   } | null>(null);
   const [submittedMcq, setSubmittedMcq] = useState<{ round: number; choice: string } | null>(null);
   const [submittedText, setSubmittedText] = useState<{ round: number; value: string } | null>(null);
+  const [debouncedAnswerQuery, setDebouncedAnswerQuery] = useState("");
   const [sourceMode, setSourceMode] = useState<SourceMode>("public_playlist");
   const [playlistQuery, setPlaylistQuery] = useState("top hits");
   const [debouncedPlaylistQuery, setDebouncedPlaylistQuery] = useState("top hits");
@@ -220,6 +222,14 @@ export function RoomPlayPage() {
   const lobbyReadyStatus = lobbyReadyStatusLabel(state, isHost, hasActivePlayerSeat);
   const typedPlaylistQuery = playlistQuery.trim();
   const normalizedPlaylistQuery = debouncedPlaylistQuery.trim();
+  const typedAnswer = answer.trim();
+  const normalizedAnswerQuery = debouncedAnswerQuery.trim();
+  const isTextLockedForAutocomplete =
+    state?.state === "playing" &&
+    state.mode === "text" &&
+    submittedText !== null &&
+    submittedText.round === state.round;
+  const answerSuggestionsListId = `answer-suggestions-${roomCode}`;
   const chatMessages = useMemo(() => {
     const messages = [...(state?.chatMessages ?? [])];
     messages.sort((left, right) => left.sentAtMs - right.sentAtMs);
@@ -237,6 +247,13 @@ export function RoomPlayPage() {
     }, 320);
     return () => window.clearTimeout(timeoutId);
   }, [playlistQuery]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedAnswerQuery(answer);
+    }, 260);
+    return () => window.clearTimeout(timeoutId);
+  }, [answer]);
 
   useEffect(() => {
     setPlaylistOffset(0);
@@ -269,6 +286,42 @@ export function RoomPlayPage() {
     enabled: isWaitingLobby && isHost && sourceMode === "public_playlist" && normalizedPlaylistQuery.length >= 2,
     staleTime: 2 * 60_000,
   });
+
+  const answerAutocompleteQuery = useQuery({
+    queryKey: ["answer-autocomplete", normalizedAnswerQuery],
+    queryFn: async () =>
+      searchTracksAcrossProviders({
+        q: normalizedAnswerQuery,
+        limit: 8,
+      }),
+    enabled:
+      state?.state === "playing" &&
+      state.mode === "text" &&
+      normalizedAnswerQuery.length >= 2 &&
+      !isTextLockedForAutocomplete,
+    staleTime: 45_000,
+  });
+
+  const answerSuggestions = useMemo(() => {
+    const source = answerAutocompleteQuery.data?.fallback ?? [];
+    const values: string[] = [];
+    const seen = new Set<string>();
+    for (const track of source) {
+      const title = withRomajiLabel(track.title);
+      const artist = withRomajiLabel(track.artist);
+      const candidates = [title, artist, `${title} - ${artist}`];
+      for (const candidate of candidates) {
+        const normalized = candidate.trim();
+        if (normalized.length < 2) continue;
+        const key = normalized.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        values.push(normalized);
+        if (values.length >= 12) return values;
+      }
+    }
+    return values;
+  }, [answerAutocompleteQuery.data?.fallback]);
 
   useEffect(() => {
     if (!playlistSearchQuery.data) return;
@@ -1108,10 +1161,20 @@ export function RoomPlayPage() {
                 <input
                   value={answer}
                   onChange={(event) => setAnswer(event.currentTarget.value)}
+                  list={answerSuggestionsListId}
+                  autoComplete="off"
                   placeholder="Ex: Daft Punk"
                   maxLength={80}
                   disabled={textLocked || answerMutation.isPending}
                 />
+                <datalist id={answerSuggestionsListId}>
+                  {answerSuggestions.map((candidate) => (
+                    <option key={candidate} value={candidate} />
+                  ))}
+                </datalist>
+                {typedAnswer.length >= 2 && typedAnswer === normalizedAnswerQuery && answerAutocompleteQuery.isFetching && (
+                  <small className="status">Suggestions...</small>
+                )}
               </label>
               <button
                 className="solid-btn"
