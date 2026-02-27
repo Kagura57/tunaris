@@ -161,7 +161,7 @@ async function upsertThemeVideo(input: {
 }
 
 export async function refreshAnimeThemesCatalog(input?: { maxPages?: number }) {
-  const maxPages = Math.max(1, Math.min(input?.maxPages ?? 4, 60));
+  const maxPages = Math.max(1, Math.min(input?.maxPages ?? 40, 200));
   if (!isDbEnabled()) {
     return {
       pageCount: 0,

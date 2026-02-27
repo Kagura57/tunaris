@@ -88,6 +88,7 @@ Anime-specific integration keys include:
 - AniList OAuth (`ANILIST_CLIENT_ID`, `ANILIST_CLIENT_SECRET`, `ANILIST_REDIRECT_URI`)
 - Optional AniList service token (`ANILIST_ACCESS_TOKEN`)
 - Redis (`REDIS_URL`) for sync workers and queues
+- AnimeThemes refresh tuning (`ANIMETHEMES_REFRESH_MAX_PAGES`, `ANIMETHEMES_REFRESH_INTERVAL_MS`)
 
 ## License
 

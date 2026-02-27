@@ -2,8 +2,10 @@ import { logEvent } from "../../lib/logger";
 import { refreshAnimeThemesCatalog } from "../AnimeThemesCatalogService";
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const FAILURE_RETRY_MS = 5 * 60 * 1000;
 
 let refreshTimer: NodeJS.Timeout | null = null;
+let refreshLoopStarted = false;
 
 function readCatalogRefreshIntervalMs() {
   const raw = process.env.ANIMETHEMES_REFRESH_INTERVAL_MS?.trim();
@@ -14,7 +16,8 @@ function readCatalogRefreshIntervalMs() {
 }
 
 export function startAnimeThemesCatalogRefreshJob() {
-  if (refreshTimer) return refreshTimer;
+  if (refreshLoopStarted && refreshTimer) return refreshTimer;
+  refreshLoopStarted = true;
 
   const intervalMs = readCatalogRefreshIntervalMs();
   const maxPagesRaw = process.env.ANIMETHEMES_REFRESH_MAX_PAGES?.trim();
@@ -23,7 +26,15 @@ export function startAnimeThemesCatalogRefreshJob() {
       ? Number.parseInt(maxPagesRaw, 10)
       : undefined;
 
+  const schedule = (delayMs: number) => {
+    refreshTimer = setTimeout(() => {
+      void run();
+    }, delayMs);
+    return refreshTimer;
+  };
+
   const run = async () => {
+    let nextDelayMs = intervalMs;
     try {
       await refreshAnimeThemesCatalog({
         maxPages: Number.isFinite(maxPages) ? maxPages : undefined,
@@ -32,10 +43,10 @@ export function startAnimeThemesCatalogRefreshJob() {
       logEvent("warn", "animethemes_catalog_refresh_failed", {
         error: error instanceof Error ? error.message : "UNKNOWN_ERROR",
       });
+      nextDelayMs = Math.min(intervalMs, FAILURE_RETRY_MS);
     }
+    schedule(nextDelayMs);
   };
 
-  void run();
-  refreshTimer = setInterval(run, intervalMs);
-  return refreshTimer;
+  return schedule(0);
 }
