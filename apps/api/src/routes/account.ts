@@ -1,10 +1,12 @@
 import { Elysia } from "elysia";
 import { readSessionFromHeaders } from "../auth/client";
+import { aniListSyncRunRepository } from "../repositories/AniListSyncRunRepository";
 import { musicAccountRepository, type MusicProvider } from "../repositories/MusicAccountRepository";
 import { matchRepository } from "../repositories/MatchRepository";
 import { profileRepository } from "../repositories/ProfileRepository";
 import { userLibrarySyncRepository } from "../repositories/UserLibrarySyncRepository";
 import { buildAniListConnectUrl, handleAniListOAuthCallback } from "../services/AniListOAuthService";
+import { queueAniListSyncForUser } from "../services/jobs/anilist-sync-trigger";
 import { buildMusicConnectUrl, handleMusicOAuthCallback } from "../services/MusicOAuthService";
 import { fetchUserLikedTracks, fetchUserPlaylists } from "../services/UserMusicLibrary";
 
@@ -100,6 +102,39 @@ export const accountRoutes = new Elysia({ prefix: "/account" })
     return `<!doctype html><html><body><script>const message=${JSON.stringify(
       { source: "kwizik-anilist-oauth", provider: "anilist", ok: result.ok },
     )};if(window.opener){window.opener.postMessage(message,"*");window.close();}else{window.location.replace(${JSON.stringify(redirect)});}</script></body></html>`;
+  })
+  .post("/anilist/sync", async ({ headers, set }) => {
+    const authContext = await requireSession(headers as unknown, set);
+    if (!authContext) {
+      return { ok: false, error: "UNAUTHORIZED" };
+    }
+    const queued = await queueAniListSyncForUser(authContext.user.id);
+    if (!queued.queued) {
+      set.status = 503;
+      return {
+        ok: false as const,
+        error: queued.reason,
+        runId: queued.runId,
+      };
+    }
+    set.status = 202;
+    return {
+      ok: true as const,
+      status: "accepted" as const,
+      runId: queued.runId,
+      jobId: queued.jobId,
+    };
+  })
+  .get("/anilist/sync/status", async ({ headers, set }) => {
+    const authContext = await requireSession(headers as unknown, set);
+    if (!authContext) {
+      return { ok: false, error: "UNAUTHORIZED" };
+    }
+    const run = await aniListSyncRunRepository.latestByUser(authContext.user.id);
+    return {
+      ok: true as const,
+      run,
+    };
   })
   .get("/music/providers", async ({ headers, set }) => {
     const authContext = await requireSession(headers as unknown, set);
