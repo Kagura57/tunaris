@@ -91,6 +91,7 @@ type RoomSession = {
   totalRounds: number;
   roundModes: RoundMode[];
   roundChoices: Map<number, string[]>;
+  recentAnimeThemeIds: string[];
   latestReveal: {
     round: number;
     trackId: string;
@@ -139,6 +140,7 @@ const PLAYERS_LIKED_POOL_BUILD_TIMEOUT_MS = 45_000;
 const ROOM_ANSWER_SUGGESTION_LIMIT = 1_000;
 const ROOM_BULK_ANSWER_TRACK_LIMIT = 16_000;
 const ROOM_BULK_ANSWER_SUGGESTION_LIMIT = 24_000;
+const ANILIST_RECENT_THEME_HISTORY_LIMIT = 280;
 
 type RoundConfig = typeof DEFAULT_ROUND_CONFIG;
 
@@ -766,6 +768,27 @@ export class RoomStore {
     };
   }
 
+  private rememberAniListThemeHistory(session: RoomSession, tracks: MusicTrack[]) {
+    if (!isAniListUnionSource(session.sourceMode) || tracks.length <= 0) return;
+    const incoming = tracks
+      .filter((track) => track.provider === "animethemes")
+      .map((track) => track.id)
+      .filter((value) => value.trim().length > 0);
+    if (incoming.length <= 0) return;
+
+    const merged = [...session.recentAnimeThemeIds, ...incoming];
+    const deduped: string[] = [];
+    const seen = new Set<string>();
+    for (let index = merged.length - 1; index >= 0; index -= 1) {
+      const key = merged[index]?.trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(key);
+      if (deduped.length >= ANILIST_RECENT_THEME_HISTORY_LIMIT) break;
+    }
+    session.recentAnimeThemeIds = deduped.reverse();
+  }
+
   private buildRoundChoices(session: RoomSession, round: number) {
     const existing = session.roundChoices.get(round);
     if (existing) return existing;
@@ -787,18 +810,38 @@ export class RoomStore {
       .map((entry) => ({
         ...entry,
         score: choiceCoherenceScore(sourceProfile, entry.profile, track, entry.track),
-      }))
-      .sort((left, right) => right.score - left.score);
+      }));
     const minimumScore = minChoiceCoherenceScore(sourceProfile.language);
 
     const uniqueOptions = [correct];
     const seen = new Set(uniqueOptions);
-    for (const distractor of rankedDistractors) {
-      if (seen.has(distractor.label)) continue;
-      if (distractor.score < minimumScore) continue;
-      uniqueOptions.push(distractor.label);
-      seen.add(distractor.label);
-      if (uniqueOptions.length >= MCQ_REQUIRED_CHOICES) break;
+    const weightedPool = rankedDistractors.filter((entry) => entry.score >= minimumScore);
+    while (weightedPool.length > 0 && uniqueOptions.length < MCQ_REQUIRED_CHOICES) {
+      const weights = weightedPool.map((entry) => Math.max(1, entry.score - minimumScore + 1));
+      const totalWeight = weights.reduce((sum, current) => sum + current, 0);
+      const ticket = Math.random() * totalWeight;
+      let cumulative = 0;
+      let selectedIndex = weightedPool.length - 1;
+      for (let index = 0; index < weightedPool.length; index += 1) {
+        cumulative += weights[index] ?? 0;
+        if (ticket <= cumulative) {
+          selectedIndex = index;
+          break;
+        }
+      }
+      const selected = weightedPool.splice(selectedIndex, 1)[0];
+      if (!selected || seen.has(selected.label)) continue;
+      uniqueOptions.push(selected.label);
+      seen.add(selected.label);
+    }
+
+    if (uniqueOptions.length < MCQ_REQUIRED_CHOICES) {
+      for (const distractor of rankedDistractors.sort((left, right) => right.score - left.score)) {
+        if (seen.has(distractor.label)) continue;
+        uniqueOptions.push(distractor.label);
+        seen.add(distractor.label);
+        if (uniqueOptions.length >= MCQ_REQUIRED_CHOICES) break;
+      }
     }
 
     const options = randomShuffle(uniqueOptions);
@@ -933,27 +976,43 @@ export class RoomStore {
           ? "and tv.theme_type = 'ED'"
           : "";
 
-    const result = await pool.query<{
-      video_key: string;
-      webm_url: string;
-      theme_type: string;
-      theme_number: number | null;
-      title_romaji: string;
-    }>(
-      `
-        select tv.video_key, tv.webm_url, tv.theme_type, tv.theme_number, aa.title_romaji
-        from anime_theme_videos tv
-        join anime_catalog_anime aa on aa.id = tv.anime_id
-        where tv.is_playable = true
-          and tv.anime_id = any($1::bigint[])
-          ${themeCondition}
-        order by random()
-        limit $2
-      `,
-      [animeIds, Math.max(targetCandidateSize * 2, safeRounds + 8)],
-    );
+    const rowLimit = Math.max(targetCandidateSize * 2, safeRounds + 8);
+    const recentWindow = Math.max(safeRounds * 3, targetCandidateSize);
+    const recentThemeIds = session.recentAnimeThemeIds.slice(-recentWindow);
+    const queryRows = async (excludeRecent: boolean) =>
+      await pool.query<{
+        video_key: string;
+        webm_url: string;
+        theme_type: string;
+        theme_number: number | null;
+        title_romaji: string;
+      }>(
+        `
+          select tv.video_key, tv.webm_url, tv.theme_type, tv.theme_number, aa.title_romaji
+          from anime_theme_videos tv
+          join anime_catalog_anime aa on aa.id = tv.anime_id
+          where tv.is_playable = true
+            and tv.anime_id = any($1::bigint[])
+            and ($3::boolean = false or tv.video_key <> all($4::text[]))
+            ${themeCondition}
+          order by random()
+          limit $2
+        `,
+        [animeIds, rowLimit, excludeRecent, recentThemeIds],
+      );
 
-    const tracks: MusicTrack[] = result.rows.map((row) => {
+    const primary = await queryRows(recentThemeIds.length > 0);
+    const rowsByVideoKey = new Map(primary.rows.map((row) => [row.video_key, row]));
+    if (rowsByVideoKey.size < rowLimit) {
+      const refill = await queryRows(false);
+      for (const row of refill.rows) {
+        if (!rowsByVideoKey.has(row.video_key)) {
+          rowsByVideoKey.set(row.video_key, row);
+        }
+      }
+    }
+
+    const tracks: MusicTrack[] = randomShuffle([...rowsByVideoKey.values()]).map((row) => {
       const themeLabel = `${row.theme_type}${row.theme_number ?? ""}`.trim();
       return {
         provider: "animethemes",
@@ -975,7 +1034,7 @@ export class RoomStore {
       tracks: split.tracks,
       distractorTracks: split.distractorTracks,
       candidateCount: split.candidateCount,
-      rawTotal: tracks.length,
+      rawTotal: rowsByVideoKey.size,
       playableTotal: tracks.length,
       cleanTotal: tracks.length,
     };
@@ -1366,6 +1425,7 @@ export class RoomStore {
       totalRounds: 0,
       roundModes: [],
       roundChoices: new Map(),
+      recentAnimeThemeIds: [],
       latestReveal: null,
       chatMessages: [],
     };
@@ -2049,6 +2109,7 @@ export class RoomStore {
 
     session.trackPool = startPoolStats.tracks;
     session.distractorTrackPool = startPoolStats.distractorTracks;
+    this.rememberAniListThemeHistory(session, [...session.trackPool, ...session.distractorTrackPool]);
     if (session.sourceMode === "players_liked") {
       session.playersLikedPool = [...startPoolStats.tracks, ...startPoolStats.distractorTracks];
       session.poolBuild.status = startPoolStats.tracks.length >= poolSize ? "ready" : "failed";
