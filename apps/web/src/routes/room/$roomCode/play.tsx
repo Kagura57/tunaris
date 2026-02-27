@@ -9,11 +9,13 @@ import {
   kickPlayer,
   leaveRoom as leaveRoomApi,
   replayRoom,
+  searchAnimeAutocomplete,
   searchPlaylistsAcrossProviders,
   sendRoomChatMessage,
   setPlayerReady,
   setRoomPublicPlaylist,
   setRoomSourceMode,
+  setRoomThemeMode,
   skipRoomRound,
   startRoom,
   submitRoomAnswer,
@@ -28,7 +30,8 @@ const COUNTDOWN_MS = 3_000;
 const REVEAL_MS = 4_000;
 const LEADERBOARD_MS = 3_000;
 
-type SourceMode = "public_playlist" | "players_liked";
+type SourceMode = "public_playlist" | "players_liked" | "anilist_union";
+type ThemeMode = "op_only" | "ed_only" | "mix";
 type AnswerSelectOption = {
   value: string;
   label: string;
@@ -107,7 +110,7 @@ function lobbyReadyStatusLabel(
     poolBuild: {
       status: "idle" | "building" | "ready" | "failed";
     };
-    sourceMode: "public_playlist" | "players_liked";
+    sourceMode: "public_playlist" | "players_liked" | "anilist_union";
     sourceConfig: {
       publicPlaylist: {
         sourceQuery: string;
@@ -126,14 +129,14 @@ function lobbyReadyStatusLabel(
         ? " · Choisis une playlist pour lancer."
         : " · En attente de la playlist du host.";
     }
-    if (state.sourceMode === "players_liked") {
+    if (state.sourceMode === "players_liked" || state.sourceMode === "anilist_union") {
       return isHost
-        ? " · Active un compte lié ou une bibliothèque déjà synchronisée pour lancer."
+        ? " · Lie puis synchronise AniList pour lancer."
         : " · En attente de la configuration du host.";
     }
     return "";
   }
-  if (state.sourceMode === "players_liked" && state.poolBuild.status !== "ready") {
+  if ((state.sourceMode === "players_liked" || state.sourceMode === "anilist_union") && state.poolBuild.status !== "ready") {
     return " · Préparation de la playlist des joueurs en cours...";
   }
   return isHost ? " · Lancement auto en cours..." : " · En attente du host pour lancer.";
@@ -191,10 +194,15 @@ export function RoomPlayPage() {
     key: string;
     embedUrl: string;
   } | null>(null);
+  const [stableAnimeVideoPlayback, setStableAnimeVideoPlayback] = useState<{
+    key: string;
+    sourceUrl: string;
+  } | null>(null);
   const [submittedMcq, setSubmittedMcq] = useState<{ round: number; choice: string } | null>(null);
   const [submittedText, setSubmittedText] = useState<{ round: number; value: string } | null>(null);
   const [answerSuggestionPool, setAnswerSuggestionPool] = useState<string[]>([]);
-  const [sourceMode, setSourceMode] = useState<SourceMode>("public_playlist");
+  const [sourceMode, setSourceMode] = useState<SourceMode>("anilist_union");
+  const [themeMode, setThemeMode] = useState<ThemeMode>("mix");
   const [playlistQuery, setPlaylistQuery] = useState("top hits");
   const [debouncedPlaylistQuery, setDebouncedPlaylistQuery] = useState("top hits");
   const [playlistOffset, setPlaylistOffset] = useState(0);
@@ -204,6 +212,7 @@ export function RoomPlayPage() {
   const [spotifyRateLimitUntilMs, setSpotifyRateLimitUntilMs] = useState<number | null>(null);
   const [startRetryNotBeforeMs, setStartRetryNotBeforeMs] = useState<number | null>(null);
   const youtubeIframeRef = useRef<HTMLIFrameElement | null>(null);
+  const animeVideoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lastPreviewRef = useRef<string | null>(null);
   const autoStartRoundRef = useRef<number>(0);
@@ -257,7 +266,8 @@ export function RoomPlayPage() {
   const isWaitingLobby = state?.state === "waiting";
   const isResolvingTracks = Boolean(state?.isResolvingTracks);
   const isPlayersLikedPoolBuilding =
-    state?.sourceMode === "players_liked" && state.poolBuild.status === "building";
+    (state?.sourceMode === "players_liked" || state?.sourceMode === "anilist_union") &&
+    state.poolBuild.status === "building";
   const currentPlayer = state?.players.find((player) => player.playerId === session.playerId) ?? null;
   const hasActivePlayerSeat = Boolean(currentPlayer);
   const lobbyReadyStatus = lobbyReadyStatusLabel(state, isHost, hasActivePlayerSeat);
@@ -274,6 +284,11 @@ export function RoomPlayPage() {
     if (!state?.sourceMode) return;
     setSourceMode(state.sourceMode);
   }, [state?.sourceMode]);
+
+  useEffect(() => {
+    if (!state?.sourceConfig?.themeMode) return;
+    setThemeMode(state.sourceConfig.themeMode);
+  }, [state?.sourceConfig?.themeMode]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -323,6 +338,14 @@ export function RoomPlayPage() {
       }),
     enabled: Boolean(session.playerId),
     staleTime: 10 * 60_000,
+    retry: 1,
+  });
+
+  const animeAutocompleteQuery = useQuery({
+    queryKey: ["anime-autocomplete", typedAnswer],
+    queryFn: () => searchAnimeAutocomplete({ q: typedAnswer, limit: 12 }),
+    enabled: typedAnswer.length >= 1 && state?.state === "playing" && state.mode === "text",
+    staleTime: 30_000,
     retry: 1,
   });
 
@@ -377,9 +400,10 @@ export function RoomPlayPage() {
   }, [bulkAnswerSuggestionsQuery.data?.suggestions]);
 
   const answerSelectOptions = useMemo<AnswerSelectOption[]>(() => {
-    if (typedAnswer.length < 3) return [];
+    if (typedAnswer.length < 1) return [];
+    const fromApi = animeAutocompleteQuery.data?.suggestions ?? [];
     const rankedPool = rankAnswerSuggestions(answerSuggestionPool, typedAnswer);
-    const values = rankedPool;
+    const values = [...fromApi.map((item) => item.label), ...rankedPool];
     const deduped: AnswerSelectOption[] = [];
     const seen = new Set<string>();
     for (const value of values) {
@@ -391,7 +415,7 @@ export function RoomPlayPage() {
       deduped.push({ value: normalized, label: normalized });
     }
     return deduped;
-  }, [answerSuggestionPool, typedAnswer]);
+  }, [animeAutocompleteQuery.data?.suggestions, answerSuggestionPool, typedAnswer]);
   const selectedAnswerOption = useMemo<AnswerSelectOption | null>(() => {
     const normalized = answer.trim();
     if (normalized.length <= 0) return null;
@@ -403,7 +427,7 @@ export function RoomPlayPage() {
   const answerSeedIsLoading =
     state?.state === "playing" &&
     state.mode === "text" &&
-    (isResolvingTracks || bulkAnswerSuggestionsQuery.isFetching) &&
+    (isResolvingTracks || bulkAnswerSuggestionsQuery.isFetching || animeAutocompleteQuery.isFetching) &&
     answerSuggestionPool.length <= 0;
 
   const showRevealAnswersInLeaderboard = state?.state === "reveal" || state?.state === "leaderboard";
@@ -563,6 +587,18 @@ export function RoomPlayPage() {
     onSuccess: () => snapshotQuery.refetch(),
   });
 
+  const themeModeMutation = useMutation({
+    mutationFn: (mode: ThemeMode) => {
+      if (!session.playerId) throw new Error("PLAYER_NOT_FOUND");
+      return setRoomThemeMode({
+        roomCode,
+        playerId: session.playerId,
+        mode,
+      });
+    },
+    onSuccess: () => snapshotQuery.refetch(),
+  });
+
   const publicPlaylistMutation = useMutation({
     mutationFn: (playlist: UnifiedPlaylistOption) => {
       if (!session.playerId) throw new Error("PLAYER_NOT_FOUND");
@@ -670,6 +706,7 @@ export function RoomPlayPage() {
   const isNonBlockingStartError =
     startErrorCode === "PLAYERS_LIBRARY_SYNCING" || startErrorCode === "PLAYLIST_TRACKS_RESOLVING";
   const sourceModeErrorCode = sourceModeMutation.error instanceof Error ? sourceModeMutation.error.message : null;
+  const themeModeErrorCode = themeModeMutation.error instanceof Error ? themeModeMutation.error.message : null;
   const publicPlaylistErrorCode =
     publicPlaylistMutation.error instanceof Error ? publicPlaylistMutation.error.message : null;
   const readyErrorCode = readyMutation.error instanceof Error ? readyMutation.error.message : null;
@@ -744,6 +781,15 @@ export function RoomPlayPage() {
     };
   }, [state?.media?.embedUrl, state?.media?.provider, state?.media?.trackId]);
 
+  const animeVideoPlayback = useMemo(() => {
+    if (!state?.media?.sourceUrl || !state.media.trackId) return null;
+    if (state.media.provider !== "animethemes") return null;
+    return {
+      key: `${state.media.provider}:${state.media.trackId}`,
+      sourceUrl: state.media.sourceUrl,
+    };
+  }, [state?.media?.sourceUrl, state?.media?.provider, state?.media?.trackId]);
+
   useEffect(() => {
     if (youtubePlayback) {
       setStableYoutubePlayback((previous) => {
@@ -763,10 +809,30 @@ export function RoomPlayPage() {
     }
   }, [state?.state, youtubePlayback]);
 
+  useEffect(() => {
+    if (animeVideoPlayback) {
+      setStableAnimeVideoPlayback((previous) => {
+        if (previous?.key === animeVideoPlayback.key) return previous;
+        return animeVideoPlayback;
+      });
+      return;
+    }
+
+    const shouldClear =
+      state?.state === "waiting" ||
+      state?.state === "results" ||
+      state?.state === undefined;
+    if (shouldClear) {
+      setStableAnimeVideoPlayback(null);
+    }
+  }, [animeVideoPlayback, state?.state]);
+
   const activeYoutubeEmbed = stableYoutubePlayback?.embedUrl ?? null;
+  const activeAnimeVideoSource = stableAnimeVideoPlayback?.sourceUrl ?? null;
   const usingYouTubePlayback = Boolean(activeYoutubeEmbed);
+  const usingAnimeVideoPlayback = Boolean(activeAnimeVideoSource);
   const revealVideoActive =
-    usingYouTubePlayback &&
+    (usingYouTubePlayback || usingAnimeVideoPlayback) &&
     state?.state !== "waiting" &&
     state?.state !== "playing" &&
     state?.state !== "results";
@@ -832,6 +898,28 @@ export function RoomPlayPage() {
   }, [activeYoutubeEmbed, stableYoutubePlayback?.key]);
 
   useEffect(() => {
+    const video = animeVideoRef.current;
+    if (!video) return;
+
+    if (!activeAnimeVideoSource) {
+      video.pause();
+      video.removeAttribute("src");
+      return;
+    }
+
+    const currentSrc = video.getAttribute("src");
+    if (currentSrc !== activeAnimeVideoSource) {
+      video.setAttribute("src", activeAnimeVideoSource);
+      video.currentTime = 0;
+    }
+
+    const playPromise = video.play();
+    if (playPromise) {
+      playPromise.catch(() => undefined);
+    }
+  }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key]);
+
+  useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
     if (audioRetryTimeoutRef.current !== null) {
@@ -839,7 +927,7 @@ export function RoomPlayPage() {
       audioRetryTimeoutRef.current = null;
     }
 
-    if (activeYoutubeEmbed) {
+    if (activeYoutubeEmbed || activeAnimeVideoSource) {
       audio.pause();
       audio.removeAttribute("src");
       lastPreviewRef.current = null;
@@ -872,7 +960,7 @@ export function RoomPlayPage() {
         }, 320);
       });
     }
-  }, [activeYoutubeEmbed, state?.previewUrl, state?.state]);
+  }, [activeAnimeVideoSource, activeYoutubeEmbed, state?.previewUrl, state?.state]);
 
   useEffect(() => {
     function unlockAudioPlayback() {
@@ -882,6 +970,10 @@ export function RoomPlayPage() {
       const audio = audioRef.current;
       if (audio && audio.src) {
         audio.play().catch(() => undefined);
+      }
+      const video = animeVideoRef.current;
+      if (video && activeAnimeVideoSource) {
+        video.play().catch(() => undefined);
       }
       if (shouldKickIframe) {
         setIframeEpoch((value) => value + 1);
@@ -895,7 +987,7 @@ export function RoomPlayPage() {
       window.removeEventListener("pointerdown", unlockAudioPlayback);
       window.removeEventListener("keydown", unlockAudioPlayback);
     };
-  }, [activeYoutubeEmbed]);
+  }, [activeAnimeVideoSource, activeYoutubeEmbed]);
 
   useEffect(() => {
     return () => {
@@ -1009,6 +1101,11 @@ export function RoomPlayPage() {
   function onSelectSourceMode(mode: SourceMode) {
     setSourceMode(mode);
     sourceModeMutation.mutate(mode);
+  }
+
+  function onSelectThemeMode(mode: ThemeMode) {
+    setThemeMode(mode);
+    themeModeMutation.mutate(mode);
   }
 
   function dispatchLeaveSignal() {
@@ -1199,11 +1296,11 @@ export function RoomPlayPage() {
                     </button>
                     <button
                       type="button"
-                      className={`source-preset-btn${sourceMode === "players_liked" ? " active" : ""}`}
-                      onClick={() => onSelectSourceMode("players_liked")}
+                      className={`source-preset-btn${sourceMode === "anilist_union" ? " active" : ""}`}
+                      onClick={() => onSelectSourceMode("anilist_union")}
                     >
-                      <strong>Liked Songs joueurs</strong>
-                      <span>Pool collaboratif des joueurs</span>
+                      <strong>AniList lié</strong>
+                      <span>Union des listes des joueurs connectés</span>
                     </button>
                   </div>
 
@@ -1283,13 +1380,43 @@ export function RoomPlayPage() {
                     </>
                   )}
 
-                  {sourceMode === "players_liked" && (
+                  {sourceMode === "anilist_union" && (
                     <div className="panel-form">
                       <p className="status">
-                        Les comptes Spotify / Deezer connectés des joueurs sont utilisés automatiquement.
+                        Les bibliothèques AniList synchronisées des joueurs sont utilisées automatiquement.
                       </p>
                     </div>
                   )}
+
+                  <div className="field-block">
+                    <span className="field-label">Mode thèmes</span>
+                    <div className="source-preset-grid">
+                      <button
+                        type="button"
+                        className={`source-preset-btn${themeMode === "op_only" ? " active" : ""}`}
+                        onClick={() => onSelectThemeMode("op_only")}
+                      >
+                        <strong>OP only</strong>
+                        <span>Openings uniquement</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`source-preset-btn${themeMode === "ed_only" ? " active" : ""}`}
+                        onClick={() => onSelectThemeMode("ed_only")}
+                      >
+                        <strong>ED only</strong>
+                        <span>Endings uniquement</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`source-preset-btn${themeMode === "mix" ? " active" : ""}`}
+                        onClick={() => onSelectThemeMode("mix")}
+                      >
+                        <strong>Mix</strong>
+                        <span>Openings + Endings</span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
               ) : (
                 <p className="status">Seul le host peut modifier la configuration source.</p>
@@ -1298,11 +1425,27 @@ export function RoomPlayPage() {
               <div className="room-meta-list">
                 <p>
                   <span>Mode source</span>
-                  <strong>{state.sourceMode === "players_liked" ? "Liked Songs joueurs" : "Playlist publique"}</strong>
+                  <strong>
+                    {state.sourceMode === "anilist_union"
+                      ? "AniList lié"
+                      : state.sourceMode === "players_liked"
+                        ? "Liked Songs joueurs"
+                        : "Playlist publique"}
+                  </strong>
                 </p>
                 <p>
                   <span>Playlist</span>
                   <strong>{withRomajiLabel(state.sourceConfig.publicPlaylist?.name ?? "Aucune playlist selectionnee")}</strong>
+                </p>
+                <p>
+                  <span>Mode thèmes</span>
+                  <strong>
+                    {state.sourceConfig.themeMode === "op_only"
+                      ? "OP only"
+                      : state.sourceConfig.themeMode === "ed_only"
+                        ? "ED only"
+                        : "Mix"}
+                  </strong>
                 </p>
               </div>
 
@@ -1382,7 +1525,7 @@ export function RoomPlayPage() {
           {state?.state === "playing" && state.mode === "text" && (
             <form className="panel-form answer-box" onSubmit={onSubmitText}>
               <label>
-                <span>Réponse (titre ou artiste)</span>
+                <span>Réponse (nom de l'anime)</span>
                 <Select<AnswerSelectOption, false>
                   classNamePrefix="answer-select"
                   inputId="answer-select-input"
@@ -1402,15 +1545,13 @@ export function RoomPlayPage() {
                     if (!option) return;
                     setAnswer(option.value.slice(0, 80));
                   }}
-                  placeholder="Ex: Daft Punk"
+                  placeholder="Nom de l'anime"
                   noOptionsMessage={() =>
                     typedAnswer.length <= 0
-                      ? "Tape un titre ou un artiste"
-                      : typedAnswer.length < 3
-                        ? "Tape au moins 3 caractères"
-                        : answerSeedIsLoading
-                          ? "Chargement de la playlist..."
-                          : "Aucune suggestion"
+                      ? "Tape un nom d'anime"
+                      : answerSeedIsLoading
+                        ? "Chargement des animes..."
+                        : "Aucune suggestion"
                   }
                   isLoading={typedAnswer.length >= 1 && answerSeedIsLoading && answerSelectOptions.length <= 0}
                   openMenuOnFocus
@@ -1481,6 +1622,28 @@ export function RoomPlayPage() {
             </div>
           )}
 
+          {!isResults && activeAnimeVideoSource && (
+            <div className="blindtest-video-shell">
+              <video
+                ref={animeVideoRef}
+                key={stableAnimeVideoPlayback?.key ?? "none"}
+                className={
+                  state?.state === "playing"
+                    ? "anime-video-hidden"
+                    : state?.state === "reveal" || state?.state === "leaderboard"
+                      ? "anime-video-reveal"
+                      : "anime-video-hidden"
+                }
+                src={activeAnimeVideoSource}
+                preload="auto"
+                playsInline
+                onError={() => {
+                  setAudioError(true);
+                }}
+              />
+            </div>
+          )}
+
           {!isResults && activeYoutubeEmbed && (
           <div className="blindtest-video-shell">
             <iframe
@@ -1503,6 +1666,7 @@ export function RoomPlayPage() {
               answerMutation.isError ||
               (startMutation.isError && !isNonBlockingStartError) ||
               sourceModeMutation.isError ||
+              themeModeMutation.isError ||
               publicPlaylistMutation.isError ||
               chatMutation.isError ||
               readyMutation.isError ||
@@ -1520,13 +1684,13 @@ export function RoomPlayPage() {
             {startErrorCode === "SOURCE_NOT_SET" && "Le host doit choisir une playlist avant de lancer."}
             {startErrorCode === "PLAYER_NOT_FOUND" && "Ta session joueur a expiré. Rejoins la room."}
             {startErrorCode === "PLAYERS_LIBRARY_NOT_READY" &&
-              "Le mode Liked Songs nécessite au moins un joueur avec un compte musical connecté."}
+              "Le mode AniList nécessite au moins un joueur avec une bibliothèque AniList synchronisée."}
             {isWaitingLobby &&
-              state?.sourceMode === "players_liked" &&
+              (state?.sourceMode === "players_liked" || state?.sourceMode === "anilist_union") &&
               state.poolBuild.status === "building" &&
               "Préparation de la playlist des joueurs... lancement automatique dès que c'est prêt."}
             {isWaitingLobby &&
-              state?.sourceMode === "players_liked" &&
+              (state?.sourceMode === "players_liked" || state?.sourceMode === "anilist_union") &&
               startRetryRemainingMs > 0 &&
               "Préparation de la playlist des joueurs... lancement automatique dès que c'est prêt."}
             {isWaitingLobby &&
@@ -1535,6 +1699,7 @@ export function RoomPlayPage() {
               "Préparation de la playlist... lancement automatique dès que c'est prêt."}
             {startErrorCode === "HOST_ONLY" && "Seul le host peut lancer la partie."}
             {sourceModeErrorCode === "HOST_ONLY" && "Seul le host peut changer le mode source."}
+            {themeModeErrorCode === "HOST_ONLY" && "Seul le host peut changer le mode thèmes."}
             {publicPlaylistErrorCode === "HOST_ONLY" && "Seul le host peut choisir la playlist publique."}
             {readyErrorCode === "INVALID_STATE" && "Le statut prêt se gère uniquement dans le lobby."}
             {readyErrorCode === "PLAYER_NOT_FOUND" && "Ta session joueur a expiré. Rejoins la room."}
@@ -1546,7 +1711,8 @@ export function RoomPlayPage() {
             {!session.playerId && "Tu dois rejoindre la room pour répondre."}
             {snapshotQuery.isError && "Synchronisation impossible."}
             {answerMutation.isError && "Réponse refusée."}
-            {audioError && !usingYouTubePlayback && "Erreur audio: extrait indisponible."}
+            {audioError && usingAnimeVideoPlayback && "Erreur média: thème indisponible."}
+            {audioError && !usingYouTubePlayback && !usingAnimeVideoPlayback && "Erreur audio: extrait indisponible."}
           </p>
         </div>
 

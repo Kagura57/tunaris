@@ -88,9 +88,10 @@ export type RoomState = {
   isResolvingTracks: boolean;
   poolSize: number;
   categoryQuery: string;
-  sourceMode: "public_playlist" | "players_liked";
+  sourceMode: "public_playlist" | "players_liked" | "anilist_union";
   sourceConfig: {
-    mode: "public_playlist" | "players_liked";
+    mode: "public_playlist" | "players_liked" | "anilist_union";
+    themeMode: "op_only" | "ed_only" | "mix";
     publicPlaylist: {
       provider: "deezer";
       id: string;
@@ -116,7 +117,7 @@ export type RoomState = {
   deadlineMs: number | null;
   previewUrl: string | null;
   media: {
-    provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube";
+    provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube" | "animethemes";
     trackId: string;
     sourceUrl: string | null;
     embedUrl: string | null;
@@ -124,7 +125,7 @@ export type RoomState = {
   reveal: {
     round: number;
     trackId: string;
-    provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube";
+    provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube" | "animethemes";
     title: string;
     titleRomaji: string | null;
     artist: string;
@@ -195,7 +196,7 @@ export type PublicRoomSummary = {
   categoryQuery: string;
   createdAtMs: number;
   canJoin: boolean;
-  sourceMode: "public_playlist" | "players_liked";
+  sourceMode: "public_playlist" | "players_liked" | "anilist_union";
   playlistName: string | null;
   deadlineMs: number | null;
   serverNowMs: number;
@@ -445,7 +446,7 @@ export async function startRoom(input: { roomCode: string; playerId: string }) {
         state: string;
         poolSize: number;
         categoryQuery: string;
-        sourceMode?: "public_playlist" | "players_liked";
+        sourceMode?: "public_playlist" | "players_liked" | "anilist_union";
         totalRounds: number;
         deadlineMs: number | null;
       }
@@ -470,9 +471,20 @@ export async function setRoomSource(input: { roomCode: string; playerId: string;
 export async function setRoomSourceMode(input: {
   roomCode: string;
   playerId: string;
-  mode: "public_playlist" | "players_liked";
+  mode: "public_playlist" | "players_liked" | "anilist_union";
 }) {
-  return requestJson<{ ok: true; mode: "public_playlist" | "players_liked" }>("/quiz/source/mode", {
+  return requestJson<{ ok: true; mode: "public_playlist" | "players_liked" | "anilist_union" }>("/quiz/source/mode", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function setRoomThemeMode(input: {
+  roomCode: string;
+  playerId: string;
+  mode: "op_only" | "ed_only" | "mix";
+}) {
+  return requestJson<{ ok: true; mode: "op_only" | "ed_only" | "mix" }>("/quiz/source/theme-mode", {
     method: "POST",
     body: JSON.stringify(input),
   });
@@ -488,7 +500,7 @@ export async function setRoomPublicPlaylist(input: {
 }) {
   return requestJson<{
     ok: true;
-    sourceMode: "public_playlist" | "players_liked";
+    sourceMode: "public_playlist" | "players_liked" | "anilist_union";
     categoryQuery: string;
   }>("/quiz/source/public-playlist", {
     method: "POST",
@@ -635,6 +647,25 @@ export async function getRoomAnswerSuggestions(input: { roomCode: string; player
     roomCode: string;
     suggestions: string[];
   }>(`/quiz/answer-suggestions/${encodeURIComponent(input.roomCode)}${query.length > 0 ? `?${query}` : ""}`);
+}
+
+export async function searchAnimeAutocomplete(input: { q: string; limit?: number }) {
+  const q = input.q.trim();
+  const params = new URLSearchParams();
+  params.set("q", q);
+  if (typeof input.limit === "number" && Number.isFinite(input.limit)) {
+    params.set("limit", String(Math.max(1, Math.min(40, Math.floor(input.limit)))));
+  }
+  return requestJson<{
+    ok: true;
+    q: string;
+    suggestions: Array<{
+      animeId: number;
+      label: string;
+      score: number;
+      matchedAlias: string;
+    }>;
+  }>(`/anime/autocomplete?${params.toString()}`);
 }
 
 export async function getRoomResults(roomCode: string) {

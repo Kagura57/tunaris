@@ -11,12 +11,18 @@ describe("live gameplay store", () => {
       totalRounds: 10,
       deadlineMs: 123,
       previewUrl: null,
-      media: null,
+      media: {
+        provider: "animethemes",
+        trackId: "demo-track",
+        sourceUrl: "https://v.animethemes.moe/demo.webm",
+        embedUrl: null,
+      },
       choices: ["A", "B", "C", "D"],
       reveal: null,
       leaderboard: null,
     });
     expect(store.getState().liveRound?.phase).toBe("playing");
     expect(store.getState().liveRound?.mode).toBe("mcq");
+    expect(store.getState().liveRound?.media?.provider).toBe("animethemes");
   });
 });

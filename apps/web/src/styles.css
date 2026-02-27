@@ -1765,6 +1765,28 @@ select option {
   pointer-events: none;
 }
 
+.anime-video-hidden {
+  position: fixed;
+  width: 320px;
+  height: 180px;
+  left: -9999px;
+  top: -9999px;
+  visibility: hidden;
+  pointer-events: none;
+  border: 0;
+}
+
+.anime-video-reveal {
+  width: 100%;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid rgba(255, 232, 111, 0.4);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.45);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
 .projection-audio-status {
   display: grid;
   gap: 8px;
