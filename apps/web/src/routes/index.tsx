@@ -173,7 +173,7 @@ export function HomePage() {
         <p className="panel-copy">Crée un lobby en un clic, choisis la visibilité, puis lance la partie.</p>
         {!account.userId && (
           <p className="status">
-            Astuce: connecte-toi pour lier Spotify/Deezer et activer le mode Liked Songs.
+            Astuce: connecte-toi pour gérer tes intégrations musicales et retrouver facilement tes parties.
           </p>
         )}
 
@@ -243,7 +243,7 @@ export function HomePage() {
                       {room.state} · {room.playerCount} joueurs
                     </p>
                     <p>
-                      Mode: {room.sourceMode === "players_liked" ? "Liked Songs joueurs" : "Playlist publique"}
+                      Mode: {room.sourceMode === "anime" ? "Anime" : "Playlist publique"}
                       {room.sourceMode === "public_playlist" && room.playlistName
                         ? ` · ${withRomajiLabel(room.playlistName)}`
                         : ""}

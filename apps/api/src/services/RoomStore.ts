@@ -13,7 +13,7 @@ import { fetchUserLikedTracksForProviders as fetchSyncedUserLikedTracksForProvid
 import { userLikedTrackRepository } from "../repositories/UserLikedTrackRepository";
 
 type RoundMode = "mcq" | "text";
-type RoomSourceMode = "public_playlist" | "players_liked";
+type RoomSourceMode = "public_playlist" | "anime" | "players_liked";
 type LibraryProvider = "spotify" | "deezer";
 type ProviderLinkStatus = "linked" | "not_linked" | "expired";
 type PoolBuildStatus = "idle" | "building" | "ready" | "failed";
@@ -67,6 +67,10 @@ type RoomSession = {
     trackCount: number | null;
     sourceQuery: string;
     selectedByPlayerId: string;
+  } | null;
+  animeSourceSelection: {
+    userName: string;
+    sourceQuery: string;
   } | null;
   playersLikedRules: {
     minContributors: number;
@@ -131,6 +135,7 @@ const YOUTUBE_RANDOM_START_MIN_DURATION_SEC = 45;
 const MCQ_REQUIRED_CHOICES = 4;
 const START_POOL_RETRY_ATTEMPTS = 3;
 const START_POOL_RETRY_DELAY_MS = 900;
+const ANILIST_USERS_SOURCE_PREFIX = "anilist:users:";
 const PLAYERS_LIKED_POOL_BUILD_TIMEOUT_MS = 45_000;
 const ROOM_ANSWER_SUGGESTION_LIMIT = 1_000;
 const ROOM_BULK_ANSWER_TRACK_LIMIT = 16_000;
@@ -172,6 +177,15 @@ function normalizeAnswer(value: string) {
     .trim();
 }
 
+function parseAniListUserName(sourceQuery: string) {
+  const normalized = sourceQuery.trim();
+  if (!normalized.toLowerCase().startsWith(ANILIST_USERS_SOURCE_PREFIX)) return null;
+  const raw = normalized.slice(ANILIST_USERS_SOURCE_PREFIX.length).trim();
+  if (!raw) return null;
+  const first = raw.split(",")[0]?.trim() ?? "";
+  return first.length > 0 ? first : null;
+}
+
 function collectAnswerVariants(track: MusicTrack) {
   const variants = new Set<string>();
 
@@ -180,6 +194,16 @@ function collectAnswerVariants(track: MusicTrack) {
     if (normalized.length <= 0) return;
     variants.add(normalized);
   };
+
+  if (track.answer?.mode === "anime") {
+    push(track.answer.canonical);
+    for (const alias of track.answer.aliases) {
+      push(alias);
+      push(getRomanizedJapaneseCached(alias));
+    }
+    push(getRomanizedJapaneseCached(track.answer.canonical));
+    return [...variants];
+  }
 
   push(track.title);
   push(track.artist);
@@ -220,11 +244,14 @@ function modeForRound(round: number): RoundMode {
 }
 
 function asChoiceLabel(track: MusicTrack) {
+  if (track.answer?.mode === "anime") {
+    return track.answer.canonical;
+  }
   return `${track.title} - ${track.artist}`;
 }
 
 function collectRoomAnswerSuggestions(
-  tracks: Array<Pick<MusicTrack, "title" | "artist">>,
+  tracks: Array<Pick<MusicTrack, "title" | "artist" | "answer">>,
   limit = ROOM_ANSWER_SUGGESTION_LIMIT,
 ) {
   const values: string[] = [];
@@ -240,6 +267,17 @@ function collectRoomAnswerSuggestions(
   };
 
   for (const track of tracks) {
+    if (track.answer?.mode === "anime") {
+      push(track.answer.canonical);
+      for (const alias of track.answer.aliases) {
+        push(alias);
+        push(getRomanizedJapaneseCached(alias));
+      }
+      push(getRomanizedJapaneseCached(track.answer.canonical));
+      if (values.length >= limit) break;
+      continue;
+    }
+
     const title = track.title.trim();
     const artist = track.artist.trim();
     const titleRomaji = getRomanizedJapaneseCached(title);
@@ -651,6 +689,9 @@ export class RoomStore {
     if (session.sourceMode === "public_playlist") {
       return session.publicPlaylistSelection?.sourceQuery?.trim() || session.categoryQuery.trim();
     }
+    if (session.sourceMode === "anime") {
+      return session.animeSourceSelection?.sourceQuery?.trim() || session.categoryQuery.trim();
+    }
     return "players:liked";
   }
 
@@ -679,7 +720,7 @@ export class RoomStore {
     if (session.isResolvingTracks) return false;
     if (session.players.size <= 0) return false;
 
-    if (session.sourceMode === "public_playlist") {
+    if (session.sourceMode !== "players_liked") {
       return this.sourceQueryForSession(session).length > 0;
     }
 
@@ -1218,6 +1259,7 @@ export class RoomStore {
       distractorTrackPool: [],
       sourceMode: "public_playlist",
       publicPlaylistSelection: null,
+      animeSourceSelection: null,
       playersLikedRules: {
         minContributors: 1,
         minTotalTracks: 1,
@@ -1249,6 +1291,15 @@ export class RoomStore {
         sourceQuery: session.categoryQuery,
         selectedByPlayerId: "system",
       };
+    } else if (session.categoryQuery.toLowerCase().startsWith(ANILIST_USERS_SOURCE_PREFIX)) {
+      const userName = parseAniListUserName(session.categoryQuery);
+      if (userName) {
+        session.sourceMode = "anime";
+        session.animeSourceSelection = {
+          userName,
+          sourceQuery: session.categoryQuery,
+        };
+      }
     }
 
     this.rooms.set(roomCode, session);
@@ -1337,8 +1388,21 @@ export class RoomStore {
     const normalized = categoryQuery.trim();
     if (normalized.length <= 0) return { status: "invalid_payload" as const };
 
-    session.sourceMode = "public_playlist";
-    if (normalized.toLowerCase().startsWith("deezer:playlist:")) {
+    if (normalized.toLowerCase().startsWith(ANILIST_USERS_SOURCE_PREFIX)) {
+      const userName = parseAniListUserName(normalized);
+      if (!userName) return { status: "invalid_payload" as const };
+
+      session.sourceMode = "anime";
+      session.animeSourceSelection = {
+        userName,
+        sourceQuery: normalized,
+      };
+      session.publicPlaylistSelection = null;
+    } else {
+      session.sourceMode = "public_playlist";
+      session.animeSourceSelection = null;
+    }
+    if (session.sourceMode === "public_playlist" && normalized.toLowerCase().startsWith("deezer:playlist:")) {
       const id = normalized.slice("deezer:playlist:".length).trim();
       session.publicPlaylistSelection = {
         provider: "deezer",
@@ -1348,7 +1412,7 @@ export class RoomStore {
         sourceQuery: normalized,
         selectedByPlayerId: playerId,
       };
-    } else {
+    } else if (session.sourceMode === "public_playlist") {
       session.publicPlaylistSelection = null;
     }
     session.playersLikedPool = [];
@@ -1379,6 +1443,7 @@ export class RoomStore {
 
     session.sourceMode = mode;
     if (mode === "public_playlist") {
+      session.animeSourceSelection = null;
       session.playersLikedPool = [];
       session.distractorTrackPool = [];
       this.roomLikedPoolRebuildRequested.delete(roomCode);
@@ -1397,6 +1462,23 @@ export class RoomStore {
       } else if (session.categoryQuery === "players:liked") {
         session.categoryQuery = "";
       }
+    } else if (mode === "anime") {
+      session.publicPlaylistSelection = null;
+      session.playersLikedPool = [];
+      session.distractorTrackPool = [];
+      this.roomLikedPoolRebuildRequested.delete(roomCode);
+      session.poolBuild = {
+        status: "idle",
+        contributorsCount: 0,
+        mergedTracksCount: 0,
+        playableTracksCount: 0,
+        lastBuiltAtMs: null,
+        errorCode: null,
+      };
+      session.isResolvingTracks = false;
+      session.trackResolutionJobsInFlight = 0;
+      const query = session.animeSourceSelection?.sourceQuery?.trim() ?? "";
+      session.categoryQuery = query;
     } else {
       session.publicPlaylistSelection = null;
       session.categoryQuery = "players:liked";
@@ -1430,6 +1512,7 @@ export class RoomStore {
       ? selection.sourceQuery.trim()
       : `deezer:playlist:${id}`;
     session.sourceMode = "public_playlist";
+    session.animeSourceSelection = null;
     session.publicPlaylistSelection = {
       provider: "deezer",
       id,
@@ -1598,6 +1681,7 @@ export class RoomStore {
     session.chatMessages = [];
     session.sourceMode = "public_playlist";
     session.publicPlaylistSelection = null;
+    session.animeSourceSelection = null;
     session.playersLikedPool = [];
     session.poolBuild = {
       status: "idle",
@@ -1664,7 +1748,7 @@ export class RoomStore {
       };
     }
     const poolSize = Math.max(1, this.config.maxRounds);
-    if (session.sourceMode === "public_playlist") {
+    if (session.sourceMode !== "players_liked") {
       const sourceQuery = this.sourceQueryForSession(session);
       if (sourceQuery.length <= 0) {
         return {
@@ -1820,6 +1904,14 @@ export class RoomStore {
           return {
             ok: false as const,
             error: "PLAYERS_LIBRARY_SYNCING" as const,
+            retryAfterMs: 1_500,
+          };
+        }
+
+        if (session.sourceMode === "anime") {
+          return {
+            ok: false as const,
+            error: "ANIME_SOURCE_SYNCING" as const,
             retryAfterMs: 1_500,
           };
         }
@@ -2182,6 +2274,8 @@ export class RoomStore {
               embedUrl: revealMedia.embedUrl,
             }
           : null;
+    const playbackStrategy =
+      session.sourceMode === "anime" ? "single_masked_video" : "audio_then_reveal_video";
     const suggestionTracks =
       session.trackPool.length > 0
         ? [...session.trackPool, ...session.distractorTrackPool]
@@ -2205,6 +2299,7 @@ export class RoomStore {
       poolSize: session.trackPool.length,
       categoryQuery: session.categoryQuery,
       sourceMode: session.sourceMode,
+      playbackStrategy,
       sourceConfig: {
         mode: session.sourceMode,
         publicPlaylist: session.publicPlaylistSelection
@@ -2217,9 +2312,9 @@ export class RoomStore {
               selectedByPlayerId: session.publicPlaylistSelection.selectedByPlayerId,
             }
           : null,
-        playersLikedRules: {
-          minContributors: session.playersLikedRules.minContributors,
-          minTotalTracks: session.playersLikedRules.minTotalTracks,
+        anime: {
+          userName: session.animeSourceSelection?.userName ?? null,
+          sourceQuery: session.animeSourceSelection?.sourceQuery ?? null,
         },
       },
       poolBuild: {

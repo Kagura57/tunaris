@@ -88,9 +88,10 @@ export type RoomState = {
   isResolvingTracks: boolean;
   poolSize: number;
   categoryQuery: string;
-  sourceMode: "public_playlist" | "players_liked";
+  sourceMode: "public_playlist" | "anime";
+  playbackStrategy: "single_masked_video" | "audio_then_reveal_video";
   sourceConfig: {
-    mode: "public_playlist" | "players_liked";
+    mode: "public_playlist" | "anime";
     publicPlaylist: {
       provider: "deezer";
       id: string;
@@ -99,9 +100,9 @@ export type RoomState = {
       sourceQuery: string;
       selectedByPlayerId: string;
     } | null;
-    playersLikedRules: {
-      minContributors: number;
-      minTotalTracks: number;
+    anime: {
+      userName: string | null;
+      sourceQuery: string | null;
     };
   };
   poolBuild: {
@@ -116,7 +117,7 @@ export type RoomState = {
   deadlineMs: number | null;
   previewUrl: string | null;
   media: {
-    provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube";
+    provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube" | "animethemes";
     trackId: string;
     sourceUrl: string | null;
     embedUrl: string | null;
@@ -124,7 +125,7 @@ export type RoomState = {
   reveal: {
     round: number;
     trackId: string;
-    provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube";
+    provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube" | "animethemes";
     title: string;
     titleRomaji: string | null;
     artist: string;
@@ -195,7 +196,7 @@ export type PublicRoomSummary = {
   categoryQuery: string;
   createdAtMs: number;
   canJoin: boolean;
-  sourceMode: "public_playlist" | "players_liked";
+  sourceMode: "public_playlist" | "anime";
   playlistName: string | null;
   deadlineMs: number | null;
   serverNowMs: number;
@@ -316,7 +317,7 @@ async function requestJson<T>(path: string, init?: RequestOptions): Promise<T> {
           method === "POST" &&
           pathWithSlash === "/quiz/start" &&
           response.status === 409 &&
-          (details === "PLAYERS_LIBRARY_SYNCING" || details === "PLAYLIST_TRACKS_RESOLVING");
+          (details === "ANIME_SOURCE_SYNCING" || details === "PLAYLIST_TRACKS_RESOLVING");
 
         if (isStartTransientConflict) {
           logClientEvent("info", "api_request_expected_transient_conflict", {
@@ -445,13 +446,13 @@ export async function startRoom(input: { roomCode: string; playerId: string }) {
         state: string;
         poolSize: number;
         categoryQuery: string;
-        sourceMode?: "public_playlist" | "players_liked";
+        sourceMode?: "public_playlist" | "anime";
         totalRounds: number;
         deadlineMs: number | null;
       }
     | {
         ok: false;
-        error: "PLAYERS_LIBRARY_SYNCING" | "PLAYLIST_TRACKS_RESOLVING";
+        error: "ANIME_SOURCE_SYNCING" | "PLAYLIST_TRACKS_RESOLVING";
         retryAfterMs?: number | null;
       }
   >("/quiz/start", {
@@ -470,9 +471,9 @@ export async function setRoomSource(input: { roomCode: string; playerId: string;
 export async function setRoomSourceMode(input: {
   roomCode: string;
   playerId: string;
-  mode: "public_playlist" | "players_liked";
+  mode: "public_playlist" | "anime";
 }) {
-  return requestJson<{ ok: true; mode: "public_playlist" | "players_liked" }>("/quiz/source/mode", {
+  return requestJson<{ ok: true; mode: "public_playlist" | "anime" }>("/quiz/source/mode", {
     method: "POST",
     body: JSON.stringify(input),
   });
@@ -488,7 +489,7 @@ export async function setRoomPublicPlaylist(input: {
 }) {
   return requestJson<{
     ok: true;
-    sourceMode: "public_playlist" | "players_liked";
+    sourceMode: "public_playlist" | "anime";
     categoryQuery: string;
   }>("/quiz/source/public-playlist", {
     method: "POST",
@@ -862,7 +863,7 @@ export async function searchTracksAcrossProviders(input: { q: string; limit?: nu
     query: string;
     limit: number;
     fallback: Array<{
-      provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube";
+      provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube" | "animethemes";
       id: string;
       title: string;
       artist: string;
@@ -872,6 +873,23 @@ export async function searchTracksAcrossProviders(input: { q: string; limit?: nu
     }>;
     results: Record<string, unknown[]>;
     providerErrors: Record<string, string>;
+  }>(`/music/search?${params.toString()}`);
+}
+
+export async function searchAnimeTitles(input: { q: string; limit?: number }) {
+  const params = new URLSearchParams();
+  params.set("domain", "anime");
+  params.set("q", input.q.trim());
+  if (typeof input.limit === "number") {
+    params.set("limit", String(input.limit));
+  }
+
+  return requestJson<{
+    domain: "anime";
+    query: string;
+    limit: number;
+    suggestions: string[];
+    cacheState: "too_short" | "hit" | "stale" | "miss" | "error";
   }>(`/music/search?${params.toString()}`);
 }
 
@@ -899,7 +917,7 @@ export async function resolveTracksFromSource(input: { source: string; size?: nu
     };
     count: number;
     tracks: Array<{
-      provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube";
+      provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube" | "animethemes";
       id: string;
       title: string;
       artist: string;

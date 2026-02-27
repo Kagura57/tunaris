@@ -8,8 +8,9 @@ export type LiveRoundState = {
   totalRounds: number;
   deadlineMs: number | null;
   previewUrl: string | null;
+  playbackStrategy: "single_masked_video" | "audio_then_reveal_video";
   media: {
-    provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube";
+    provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube" | "animethemes";
     trackId: string;
     sourceUrl: string | null;
     embedUrl: string | null;
@@ -17,7 +18,7 @@ export type LiveRoundState = {
   choices: string[] | null;
   reveal: {
     trackId: string;
-    provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube";
+    provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube" | "animethemes";
     title: string;
     artist: string;
     acceptedAnswer: string;

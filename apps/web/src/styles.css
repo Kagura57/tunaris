@@ -1747,6 +1747,17 @@ select option {
   border: 0;
 }
 
+.blindtest-video-masked {
+  width: 100%;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+  background: #020203;
+  opacity: 0.02;
+  pointer-events: none;
+}
+
 .blindtest-video-shell {
   width: 100%;
   display: block;

@@ -27,4 +27,13 @@ describe("playback support", () => {
     });
     expect(playable).toBe(false);
   });
+
+  it("accepts animethemes webm tracks as playable", () => {
+    const playable = isTrackPlayable({
+      provider: "animethemes",
+      previewUrl: null,
+      sourceUrl: "https://v.animethemes.moe/ShingekiNoKyojin-OP1.webm",
+    });
+    expect(playable).toBe(true);
+  });
 });

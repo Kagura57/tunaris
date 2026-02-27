@@ -16,12 +16,20 @@ type AniListPayload = {
       lists?: Array<{
         entries?: Array<{
           media?: {
+            id?: number | null;
             title?: AniListMediaTitle | null;
+            synonyms?: string[] | null;
           } | null;
         }>;
       }>;
     };
   };
+};
+
+export type AniListAnimeEntry = {
+  id: string;
+  canonicalTitle: string;
+  synonyms: string[];
 };
 
 const ANILIST_GRAPHQL_URL = "https://graphql.anilist.co";
@@ -42,17 +50,19 @@ query ($userName: String) {
   MediaListCollection(
     userName: $userName
     type: ANIME
-    status_in: [CURRENT, COMPLETED, REPEATING]
+    status_in: [CURRENT, COMPLETED]
     sort: [UPDATED_TIME_DESC]
   ) {
     lists {
       entries {
         media {
+          id
           title {
             romaji
             english
             native
           }
+          synonyms
         }
       }
     }
@@ -60,7 +70,26 @@ query ($userName: String) {
 }
 `;
 
-export async function fetchAniListUserAnimeTitles(userName: string, limit = 80): Promise<string[]> {
+function normalizeSynonyms(values: Array<string | null | undefined>, canonicalTitle: string) {
+  const output: string[] = [];
+  const seen = new Set<string>();
+  const push = (value: string | null | undefined) => {
+    const normalized = value?.trim() ?? "";
+    if (normalized.length <= 0) return;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    output.push(normalized);
+  };
+
+  push(canonicalTitle);
+  for (const value of values) {
+    push(value);
+  }
+  return output;
+}
+
+export async function fetchAniListUserAnimeEntries(userName: string, limit = 80): Promise<AniListAnimeEntry[]> {
   const trimmed = userName.trim();
   if (trimmed.length === 0) return [];
 
@@ -97,24 +126,33 @@ export async function fetchAniListUserAnimeTitles(userName: string, limit = 80):
   )) as AniListPayload | null;
 
   const seen = new Set<string>();
-  const titles: string[] = [];
+  const entries: AniListAnimeEntry[] = [];
   const lists = payload?.data?.MediaListCollection?.lists ?? [];
   for (const list of lists) {
-    const entries = list.entries ?? [];
-    for (const entry of entries) {
+    const mediaEntries = list.entries ?? [];
+    for (const entry of mediaEntries) {
       const title = pickTitle(entry.media?.title);
       if (!title) continue;
 
       const key = title.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
-      titles.push(title);
+      entries.push({
+        id: String(entry.media?.id ?? key),
+        canonicalTitle: title,
+        synonyms: normalizeSynonyms(entry.media?.synonyms ?? [], title),
+      });
 
-      if (titles.length >= limit) return titles;
+      if (entries.length >= limit) return entries;
     }
   }
 
-  return titles;
+  return entries;
+}
+
+export async function fetchAniListUserAnimeTitles(userName: string, limit = 80): Promise<string[]> {
+  const entries = await fetchAniListUserAnimeEntries(userName, limit);
+  return entries.map((entry) => entry.canonicalTitle);
 }
 
 function normalizeUsernames(input: string[]) {
@@ -139,27 +177,28 @@ export async function fetchAniListUsersOpeningTracks(
   const cleanUsernames = normalizeUsernames(usernames).slice(0, 8);
   if (cleanUsernames.length === 0) return [];
 
-  const titlesByUser = await Promise.all(
+  const entriesByUser = await Promise.all(
     cleanUsernames.map(async (username) => ({
       username,
-      titles: await fetchAniListUserAnimeTitles(username, 80),
+      entries: await fetchAniListUserAnimeEntries(username, 80),
     })),
   );
 
-  const mergedTitles = titlesByUser.flatMap((entry) => entry.titles);
-  const dedupedTitles: string[] = [];
-  const seen = new Set<string>();
-  for (const title of mergedTitles) {
-    const key = title.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    dedupedTitles.push(title);
+  const mergedEntries = entriesByUser.flatMap((entry) => entry.entries);
+  const dedupedEntries: AniListAnimeEntry[] = [];
+  const seenTitles = new Set<string>();
+  for (const entry of mergedEntries) {
+    const key = entry.canonicalTitle.toLowerCase();
+    if (seenTitles.has(key)) continue;
+    seenTitles.add(key);
+    dedupedEntries.push(entry);
   }
 
   const resolvedTracks: MusicTrack[] = [];
   const seenTrackSignatures = new Set<string>();
 
-  for (const title of dedupedTitles) {
+  for (const entry of dedupedEntries) {
+    const title = entry.canonicalTitle;
     const query = `${title} opening`;
     const search = await unifiedMusicSearch(query, 4, {
       providerOrder: ["youtube", "spotify", "deezer", "apple-music", "tidal"],
@@ -173,14 +212,21 @@ export async function fetchAniListUsersOpeningTracks(
     const signature = `${candidate.title.toLowerCase()}::${candidate.artist.toLowerCase()}`;
     if (seenTrackSignatures.has(signature)) continue;
     seenTrackSignatures.add(signature);
-    resolvedTracks.push(candidate);
+    resolvedTracks.push({
+      ...candidate,
+      answer: {
+        canonical: entry.canonicalTitle,
+        aliases: entry.synonyms,
+        mode: "anime",
+      },
+    });
 
     if (resolvedTracks.length >= safeLimit) break;
   }
 
   logEvent("info", "anilist_opening_tracks_resolved", {
     usernames: cleanUsernames,
-    sourceTitleCount: dedupedTitles.length,
+    sourceTitleCount: dedupedEntries.length,
     resolvedTrackCount: resolvedTracks.length,
     requestedLimit: safeLimit,
   });

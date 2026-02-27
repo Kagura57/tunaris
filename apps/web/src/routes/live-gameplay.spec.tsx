@@ -11,6 +11,7 @@ describe("live gameplay store", () => {
       totalRounds: 10,
       deadlineMs: 123,
       previewUrl: null,
+      playbackStrategy: "audio_then_reveal_video",
       media: null,
       choices: ["A", "B", "C", "D"],
       reveal: null,

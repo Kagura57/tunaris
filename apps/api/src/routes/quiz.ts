@@ -128,7 +128,11 @@ export const quizRoutes = new Elysia({ prefix: "/quiz" })
         set.status = 429;
       } else if (started.error === "NO_TRACKS_FOUND") {
         set.status = 422;
-      } else if (started.error === "PLAYERS_LIBRARY_SYNCING" || started.error === "PLAYLIST_TRACKS_RESOLVING") {
+      } else if (
+        started.error === "PLAYERS_LIBRARY_SYNCING" ||
+        started.error === "ANIME_SOURCE_SYNCING" ||
+        started.error === "PLAYLIST_TRACKS_RESOLVING"
+      ) {
         set.status = 202;
       } else if (started.error === "PLAYERS_LIBRARY_NOT_READY") {
         set.status = 409;
@@ -184,7 +188,7 @@ export const quizRoutes = new Elysia({ prefix: "/quiz" })
       set.status = 400;
       return { ok: false, error: "INVALID_PAYLOAD" };
     }
-    if (mode !== "public_playlist" && mode !== "players_liked") {
+    if (mode !== "public_playlist" && mode !== "anime") {
       set.status = 400;
       return { ok: false, error: "INVALID_MODE" };
     }

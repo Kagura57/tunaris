@@ -5,6 +5,7 @@ import {
   fetchSpotifyPopularTracks,
   SPOTIFY_RATE_LIMITED_ERROR,
 } from "../routes/music/spotify";
+import { resolveAnimeThemeVideo } from "../routes/music/animethemes";
 import { searchYouTube } from "../routes/music/youtube";
 import { logEvent } from "../lib/logger";
 import type { MusicTrack } from "./music-types";
@@ -979,6 +980,42 @@ function fillQueryForParsedSource(parsed: ParsedTrackSource) {
   return "";
 }
 
+async function prioritizeAnimeThemesPlayback(tracks: MusicTrack[], size: number) {
+  const safeSize = Math.max(1, size);
+  const animeTracks = tracks.filter((track) => track.answer?.mode === "anime");
+  if (animeTracks.length <= 0) return [];
+
+  const selected: MusicTrack[] = [];
+  const seenAnswers = new Set<string>();
+  for (const track of animeTracks) {
+    if (selected.length >= safeSize) break;
+    const canonical = track.answer?.canonical?.trim() ?? "";
+    if (!canonical) continue;
+    const answerKey = canonical.toLowerCase();
+    if (seenAnswers.has(answerKey)) continue;
+    seenAnswers.add(answerKey);
+
+    const resolved = await resolveAnimeThemeVideo({
+      canonicalTitle: canonical,
+      aliases: track.answer?.aliases ?? [],
+    });
+    if (!resolved) continue;
+
+    selected.push({
+      ...track,
+      provider: "animethemes",
+      id: resolved.trackId,
+      title: canonical,
+      artist: resolved.themeLabel || "Anime Theme",
+      durationSec: track.durationSec ?? null,
+      previewUrl: null,
+      sourceUrl: resolved.sourceUrl,
+    } satisfies MusicTrack);
+  }
+
+  return selected.slice(0, safeSize);
+}
+
 function sourceFetchLimit(size: number) {
   return Math.min(120, Math.max(24, size * 2));
 }
@@ -1116,7 +1153,12 @@ export async function resolveTrackPoolFromSource(
         Math.min(50, Math.max(safeSize * 3, safeSize)),
       );
       if (tracks.length > 0) {
-        const prioritized = await prioritizeYouTubePlayback(
+        const animeThemesFirst = await prioritizeAnimeThemesPlayback(tracks, safeSize);
+        if (animeThemesFirst.length >= safeSize) {
+          return animeThemesFirst.slice(0, safeSize);
+        }
+
+        const prioritizedYouTube = await prioritizeYouTubePlayback(
           tracks,
           safeSize,
           {
@@ -1125,7 +1167,20 @@ export async function resolveTrackPoolFromSource(
             maxResolveBudget: tracks.length,
           },
         );
-        if (prioritized.length > 0) return prioritized;
+        if (animeThemesFirst.length > 0 && prioritizedYouTube.length > 0) {
+          const merged: MusicTrack[] = [];
+          const seen = new Set<string>();
+          for (const track of [...animeThemesFirst, ...prioritizedYouTube]) {
+            const answerKey = track.answer?.canonical?.toLowerCase() ?? `${track.provider}:${track.id}`;
+            if (seen.has(answerKey)) continue;
+            seen.add(answerKey);
+            merged.push(track);
+            if (merged.length >= safeSize) break;
+          }
+          if (merged.length > 0) return merged;
+        }
+        if (animeThemesFirst.length > 0) return animeThemesFirst;
+        if (prioritizedYouTube.length > 0) return prioritizedYouTube;
         logEvent("warn", "track_source_priority_empty_fallback", {
           sourceType: parsed.type,
           categoryQuery: options.categoryQuery,

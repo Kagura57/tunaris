@@ -65,4 +65,43 @@ describe("quiz routes", () => {
 
     expect(results.ranking[0]?.userId).toBeNull();
   });
+
+  it("rejects legacy players_liked source mode", async () => {
+    const createRes = await app.handle(new Request("http://localhost/quiz/create", { method: "POST" }));
+    const created = (await createRes.json()) as { roomCode: string };
+
+    const joinRes = await app.handle(
+      new Request("http://localhost/quiz/join", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          roomCode: created.roomCode,
+          displayName: "Host Player",
+        }),
+      }),
+    );
+    expect(joinRes.status).toBe(200);
+    const joined = (await joinRes.json()) as { playerId: string };
+
+    const sourceModeRes = await app.handle(
+      new Request("http://localhost/quiz/source/mode", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          roomCode: created.roomCode,
+          playerId: joined.playerId,
+          mode: "players_liked",
+        }),
+      }),
+    );
+
+    expect(sourceModeRes.status).toBe(400);
+    const payload = (await sourceModeRes.json()) as { ok: boolean; error: string };
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toBe("INVALID_MODE");
+  });
 });

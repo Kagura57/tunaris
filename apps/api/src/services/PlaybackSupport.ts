@@ -15,6 +15,13 @@ export function hasYouTubePlayback(track: Pick<MusicTrack, "provider" | "sourceU
   return source.includes("youtube.com/watch") || source.includes("youtu.be/");
 }
 
+export function hasAnimeThemesPlayback(track: Pick<MusicTrack, "provider" | "sourceUrl">) {
+  if (track.provider === "animethemes") return true;
+  if (!hasText(track.sourceUrl)) return false;
+  const source = track.sourceUrl?.toLowerCase() ?? "";
+  return source.includes("animethemes.moe/") || source.endsWith(".webm");
+}
+
 export function isTrackPlayable(track: Pick<MusicTrack, "provider" | "previewUrl" | "sourceUrl">) {
-  return hasYouTubePlayback(track);
+  return hasYouTubePlayback(track) || hasAnimeThemesPlayback(track);
 }
