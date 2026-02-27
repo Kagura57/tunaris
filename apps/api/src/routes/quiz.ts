@@ -555,6 +555,32 @@ export const quizRoutes = new Elysia({ prefix: "/quiz" })
       message: result.message,
     };
   })
+  .get("/answer-suggestions/:roomCode", async ({ params, query, set }) => {
+    const playerId =
+      typeof query === "object" && query !== null && typeof (query as Record<string, unknown>).playerId === "string"
+        ? ((query as Record<string, unknown>).playerId as string).trim()
+        : "";
+
+    const result = await roomStore.roomAnswerSuggestions(
+      params.roomCode,
+      playerId.length > 0 ? playerId : undefined,
+    );
+
+    if (result.status === "room_not_found") {
+      set.status = 404;
+      return { ok: false, error: "ROOM_NOT_FOUND" };
+    }
+    if (result.status === "player_not_found") {
+      set.status = 404;
+      return { ok: false, error: "PLAYER_NOT_FOUND" };
+    }
+
+    return {
+      ok: true as const,
+      roomCode: params.roomCode,
+      suggestions: result.suggestions,
+    };
+  })
   .get("/results/:roomCode", async ({ params, set }) => {
     const results = roomStore.roomResults(params.roomCode);
     if (!results) {

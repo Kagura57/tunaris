@@ -4,13 +4,12 @@ import { useNavigate, useParams } from "@tanstack/react-router";
 import Select, { type InputActionMeta, type SingleValue } from "react-select";
 import { toRomaji } from "wanakana";
 import {
+  getRoomAnswerSuggestions,
   HttpStatusError,
   kickPlayer,
   leaveRoom as leaveRoomApi,
   replayRoom,
-  resolveTracksFromSource,
   searchPlaylistsAcrossProviders,
-  searchTracksAcrossProviders,
   sendRoomChatMessage,
   setPlayerReady,
   setRoomPublicPlaylist,
@@ -176,31 +175,6 @@ function rankAnswerSuggestions(values: string[], query: string) {
   return [...startsWith, ...includes];
 }
 
-function collectSuggestionValuesFromTracks(
-  tracks: Array<{ title: string; artist: string; titleRomaji?: string | null; artistRomaji?: string | null }>,
-  max = 240,
-) {
-  const values: string[] = [];
-  const seen = new Set<string>();
-
-  for (const track of tracks) {
-    const title = withRomajiLabel(track.title, track.titleRomaji);
-    const artist = withRomajiLabel(track.artist, track.artistRomaji);
-    const candidates = [title, artist, `${title} - ${artist}`];
-    for (const candidate of candidates) {
-      const normalized = candidate.trim();
-      if (normalized.length < 2) continue;
-      const key = normalized.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      values.push(normalized);
-      if (values.length >= max) return values;
-    }
-  }
-
-  return values;
-}
-
 export function RoomPlayPage() {
   const { roomCode } = useParams({ from: "/room/$roomCode/play" });
   const navigate = useNavigate();
@@ -219,7 +193,6 @@ export function RoomPlayPage() {
   } | null>(null);
   const [submittedMcq, setSubmittedMcq] = useState<{ round: number; choice: string } | null>(null);
   const [submittedText, setSubmittedText] = useState<{ round: number; value: string } | null>(null);
-  const [debouncedAnswerQuery, setDebouncedAnswerQuery] = useState("");
   const [answerSuggestionPool, setAnswerSuggestionPool] = useState<string[]>([]);
   const [sourceMode, setSourceMode] = useState<SourceMode>("public_playlist");
   const [playlistQuery, setPlaylistQuery] = useState("top hits");
@@ -284,26 +257,12 @@ export function RoomPlayPage() {
   const isResolvingTracks = Boolean(state?.isResolvingTracks);
   const isPlayersLikedPoolBuilding =
     state?.sourceMode === "players_liked" && state.poolBuild.status === "building";
-  const isPlayersLikedPoolPending =
-    state?.sourceMode === "players_liked" && state.poolBuild.status !== "ready";
   const currentPlayer = state?.players.find((player) => player.playerId === session.playerId) ?? null;
   const hasActivePlayerSeat = Boolean(currentPlayer);
   const lobbyReadyStatus = lobbyReadyStatusLabel(state, isHost, hasActivePlayerSeat);
   const typedPlaylistQuery = playlistQuery.trim();
   const normalizedPlaylistQuery = debouncedPlaylistQuery.trim();
-  const selectedPlaylistSourceQuery =
-    state?.sourceMode === "public_playlist"
-      ? state.sourceConfig.publicPlaylist?.sourceQuery?.trim() ?? ""
-      : "";
-  const selectedPlaylistTrackCount =
-    state?.sourceMode === "public_playlist" ? state.sourceConfig.publicPlaylist?.trackCount ?? null : null;
   const typedAnswer = answer.trim();
-  const normalizedAnswerQuery = debouncedAnswerQuery.trim();
-  const isTextLockedForAutocomplete =
-    state?.state === "playing" &&
-    state.mode === "text" &&
-    submittedText !== null &&
-    submittedText.round === state.round;
   const chatMessages = useMemo(() => {
     const messages = [...(state?.chatMessages ?? [])];
     messages.sort((left, right) => left.sentAtMs - right.sentAtMs);
@@ -321,13 +280,6 @@ export function RoomPlayPage() {
     }, 320);
     return () => window.clearTimeout(timeoutId);
   }, [playlistQuery]);
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      setDebouncedAnswerQuery(answer);
-    }, 40);
-    return () => window.clearTimeout(timeoutId);
-  }, [answer]);
 
   useEffect(() => {
     setPlaylistOffset(0);
@@ -361,91 +313,72 @@ export function RoomPlayPage() {
     staleTime: 2 * 60_000,
   });
 
-  const preloadSuggestionLimit = useMemo(() => {
-    if (typeof selectedPlaylistTrackCount !== "number" || !Number.isFinite(selectedPlaylistTrackCount)) {
-      return 180;
-    }
-    return Math.max(60, Math.min(Math.floor(selectedPlaylistTrackCount), 500));
-  }, [selectedPlaylistTrackCount]);
-
-  const answerSourceSeedQuery = useQuery({
-    queryKey: ["answer-source-seed", roomCode, selectedPlaylistSourceQuery, preloadSuggestionLimit],
-    queryFn: async () =>
-      resolveTracksFromSource({
-        source: selectedPlaylistSourceQuery,
-        size: preloadSuggestionLimit,
+  const bulkAnswerSuggestionsQuery = useQuery({
+    queryKey: ["room-answer-suggestions", roomCode, state?.sourceMode ?? "unknown", session.playerId ?? "anonymous"],
+    queryFn: () =>
+      getRoomAnswerSuggestions({
+        roomCode,
+        playerId: session.playerId,
       }),
-    enabled:
-      selectedPlaylistSourceQuery.length > 0 &&
-      (state?.state === "waiting" || state?.state === "countdown"),
+    enabled: Boolean(session.playerId),
     staleTime: 10 * 60_000,
+    retry: 1,
   });
 
-  const localMatchCount = useMemo(
-    () => rankAnswerSuggestions(answerSuggestionPool, typedAnswer).length,
-    [answerSuggestionPool, typedAnswer],
-  );
-
-  const answerAutocompleteQuery = useQuery({
-    queryKey: ["answer-autocomplete", normalizedAnswerQuery],
-    queryFn: async () =>
-      searchTracksAcrossProviders({
-        q: normalizedAnswerQuery,
-        limit: 12,
-      }),
-    enabled:
-      state?.state === "playing" &&
-      state.mode === "text" &&
-      normalizedAnswerQuery.length >= 1 &&
-      !isTextLockedForAutocomplete &&
-      localMatchCount < 8,
-    staleTime: 3 * 60_000,
-    placeholderData: (previousData) => previousData,
-  });
-
-  const answerSuggestions = useMemo(() => {
-    const source = answerAutocompleteQuery.data?.fallback ?? [];
-    return collectSuggestionValuesFromTracks(source, 12);
-  }, [answerAutocompleteQuery.data?.fallback]);
+  const maxSuggestionPoolSize = 24_000;
 
   useEffect(() => {
-    const sourceTracks = answerSourceSeedQuery.data?.tracks ?? [];
-    if (sourceTracks.length <= 0) return;
-    const seeded = collectSuggestionValuesFromTracks(sourceTracks, 800);
-    if (seeded.length <= 0) return;
+    setAnswerSuggestionPool([]);
+  }, [roomCode]);
+
+  useEffect(() => {
+    const incomingSuggestions = state?.answerSuggestions ?? [];
+    if (incomingSuggestions.length <= 0) return;
 
     setAnswerSuggestionPool((previous) => {
       const merged = [...previous];
       const seen = new Set(merged.map((value) => value.toLowerCase()));
-      for (const value of seeded) {
-        const key = value.toLowerCase();
+
+      for (const value of incomingSuggestions) {
+        const normalized = value.trim();
+        if (normalized.length < 2) continue;
+        const key = normalized.toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
-        merged.push(value);
+        merged.push(normalized);
       }
-      return merged.slice(-800);
+
+      if (merged.length <= maxSuggestionPoolSize) return merged;
+      return merged.slice(-maxSuggestionPoolSize);
     });
-  }, [answerSourceSeedQuery.data?.tracks]);
+  }, [state?.answerSuggestions]);
 
   useEffect(() => {
-    if (answerSuggestions.length <= 0) return;
+    const incomingSuggestions = bulkAnswerSuggestionsQuery.data?.suggestions ?? [];
+    if (incomingSuggestions.length <= 0) return;
+
     setAnswerSuggestionPool((previous) => {
       const merged = [...previous];
       const seen = new Set(merged.map((value) => value.toLowerCase()));
-      for (const value of answerSuggestions) {
-        const key = value.toLowerCase();
+
+      for (const value of incomingSuggestions) {
+        const normalized = value.trim();
+        if (normalized.length < 2) continue;
+        const key = normalized.toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
-        merged.push(value);
+        merged.push(normalized);
       }
-      return merged.slice(-240);
+
+      if (merged.length <= maxSuggestionPoolSize) return merged;
+      return merged.slice(-maxSuggestionPoolSize);
     });
-  }, [answerSuggestions]);
+  }, [bulkAnswerSuggestionsQuery.data?.suggestions]);
 
   const answerSelectOptions = useMemo<AnswerSelectOption[]>(() => {
+    if (typedAnswer.length < 3) return [];
     const rankedPool = rankAnswerSuggestions(answerSuggestionPool, typedAnswer);
-    const rankedRemote = rankAnswerSuggestions(answerSuggestions, typedAnswer);
-    const values = [...rankedPool, ...rankedRemote];
+    const values = rankedPool;
     const deduped: AnswerSelectOption[] = [];
     const seen = new Set<string>();
     for (const value of values) {
@@ -455,10 +388,22 @@ export function RoomPlayPage() {
       if (seen.has(key)) continue;
       seen.add(key);
       deduped.push({ value: normalized, label: normalized });
-      if (deduped.length >= 16) break;
     }
     return deduped;
-  }, [answerSuggestionPool, answerSuggestions, typedAnswer]);
+  }, [answerSuggestionPool, typedAnswer]);
+  const selectedAnswerOption = useMemo<AnswerSelectOption | null>(() => {
+    const normalized = answer.trim();
+    if (normalized.length <= 0) return null;
+    const existing =
+      answerSelectOptions.find((option) => option.value.toLowerCase() === normalized.toLowerCase()) ?? null;
+    if (existing) return existing;
+    return { value: normalized, label: normalized };
+  }, [answer, answerSelectOptions]);
+  const answerSeedIsLoading =
+    state?.state === "playing" &&
+    state.mode === "text" &&
+    (isResolvingTracks || bulkAnswerSuggestionsQuery.isFetching) &&
+    answerSuggestionPool.length <= 0;
 
   const showRevealAnswersInLeaderboard = state?.state === "reveal" || state?.state === "leaderboard";
   const revealAnswerByPlayerId = useMemo(() => {
@@ -564,7 +509,7 @@ export function RoomPlayPage() {
       !state.canStart ||
       startMutation.isPending ||
       isResolvingTracks ||
-      isPlayersLikedPoolPending
+      isPlayersLikedPoolBuilding
     ) {
       return;
     }
@@ -575,7 +520,7 @@ export function RoomPlayPage() {
   }, [
     isHost,
     isResolvingTracks,
-    isPlayersLikedPoolPending,
+    isPlayersLikedPoolBuilding,
     startMutation,
     startMutation.isPending,
     state,
@@ -1355,7 +1300,7 @@ export function RoomPlayPage() {
                       startMutation.isPending ||
                       !state.canStart ||
                       isResolvingTracks ||
-                      isPlayersLikedPoolPending
+                      isPlayersLikedPoolBuilding
                     }
                   >
                     {startMutation.isPending ? "Lancement..." : "Lancer la partie"}
@@ -1416,8 +1361,7 @@ export function RoomPlayPage() {
                   inputId="answer-select-input"
                   unstyled
                   options={answerSelectOptions}
-                  inputValue={answer}
-                  value={null}
+                  value={selectedAnswerOption}
                   onInputChange={(inputValue: string, actionMeta: InputActionMeta) => {
                     if (actionMeta.action === "input-change") {
                       setAnswer(inputValue.slice(0, 80));
@@ -1433,17 +1377,15 @@ export function RoomPlayPage() {
                   }}
                   placeholder="Ex: Daft Punk"
                   noOptionsMessage={() =>
-                    typedAnswer.length >= 1
-                      ? answerAutocompleteQuery.isFetching
-                        ? "Recherche..."
-                        : "Aucune suggestion"
-                      : "Tape un titre ou un artiste"
+                    typedAnswer.length <= 0
+                      ? "Tape un titre ou un artiste"
+                      : typedAnswer.length < 3
+                        ? "Tape au moins 3 caractères"
+                        : answerSeedIsLoading
+                          ? "Chargement de la playlist..."
+                          : "Aucune suggestion"
                   }
-                  isLoading={
-                    typedAnswer.length >= 1 &&
-                    answerAutocompleteQuery.isFetching &&
-                    answerSelectOptions.length <= 0
-                  }
+                  isLoading={typedAnswer.length >= 1 && answerSeedIsLoading && answerSelectOptions.length <= 0}
                   openMenuOnFocus
                   blurInputOnSelect={false}
                   isDisabled={textLocked || answerMutation.isPending}

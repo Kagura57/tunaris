@@ -10,6 +10,7 @@ import type { MusicTrack } from "./music-types";
 import { getRomanizedJapaneseCached, scheduleRomanizeJapanese } from "./JapaneseRomanizer";
 import { SPOTIFY_RATE_LIMITED_ERROR, spotifyPlaylistRateLimitRetryAfterMs } from "../routes/music/spotify";
 import { fetchUserLikedTracksForProviders as fetchSyncedUserLikedTracksForProviders } from "./UserMusicLibrary";
+import { userLikedTrackRepository } from "../repositories/UserLikedTrackRepository";
 
 type RoundMode = "mcq" | "text";
 type RoomSourceMode = "public_playlist" | "players_liked";
@@ -125,14 +126,15 @@ const TRACK_POOL_TARGET_MULTIPLIER = 5;
 const TRACK_POOL_MIN_CANDIDATES = 24;
 const TRACK_POOL_MAX_CANDIDATES = 100;
 const PLAYERS_LIKED_TARGET_BUFFER = 2;
-const PLAYERS_LIKED_REBUILD_COOLDOWN_MS = 15_000;
 const YOUTUBE_RANDOM_START_MIN_SEC = 18;
-const YOUTUBE_RANDOM_START_FALLBACK_MAX_SEC = 45;
 const YOUTUBE_RANDOM_START_END_BUFFER_SEC = 20;
 const YOUTUBE_RANDOM_START_MIN_DURATION_SEC = 45;
 const MCQ_REQUIRED_CHOICES = 4;
 const START_POOL_RETRY_ATTEMPTS = 3;
 const START_POOL_RETRY_DELAY_MS = 900;
+const ROOM_ANSWER_SUGGESTION_LIMIT = 1_000;
+const ROOM_BULK_ANSWER_TRACK_LIMIT = 16_000;
+const ROOM_BULK_ANSWER_SUGGESTION_LIMIT = 24_000;
 
 type RoundConfig = typeof DEFAULT_ROUND_CONFIG;
 
@@ -218,6 +220,39 @@ function modeForRound(round: number): RoundMode {
 
 function asChoiceLabel(track: MusicTrack) {
   return `${track.title} - ${track.artist}`;
+}
+
+function collectRoomAnswerSuggestions(
+  tracks: Array<Pick<MusicTrack, "title" | "artist">>,
+  limit = ROOM_ANSWER_SUGGESTION_LIMIT,
+) {
+  const values: string[] = [];
+  const seen = new Set<string>();
+
+  const push = (value: string | null | undefined) => {
+    const normalized = value?.trim() ?? "";
+    if (normalized.length < 2) return;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    values.push(normalized);
+  };
+
+  for (const track of tracks) {
+    const title = track.title.trim();
+    const artist = track.artist.trim();
+    const titleRomaji = getRomanizedJapaneseCached(title);
+    const artistRomaji = getRomanizedJapaneseCached(artist);
+
+    push(title);
+    push(artist);
+    push(titleRomaji);
+    push(artistRomaji);
+
+    if (values.length >= limit) break;
+  }
+
+  return values.slice(0, limit);
 }
 
 type TrackLanguageGroup = "japanese" | "korean" | "french" | "english" | "latin" | "other";
@@ -473,12 +508,10 @@ function youtubeRoundStartSeconds(
   if (durationSec !== null && durationSec < YOUTUBE_RANDOM_START_MIN_DURATION_SEC) {
     return 0;
   }
+  if (durationSec === null) return 0;
 
   const minStart = YOUTUBE_RANDOM_START_MIN_SEC;
-  const maxStart =
-    durationSec !== null
-      ? Math.max(minStart, durationSec - YOUTUBE_RANDOM_START_END_BUFFER_SEC)
-      : YOUTUBE_RANDOM_START_FALLBACK_MAX_SEC;
+  const maxStart = Math.max(minStart, durationSec - YOUTUBE_RANDOM_START_END_BUFFER_SEC);
   const seed = `${context.roomCode}:${context.round}:${track.id}`;
   return deterministicIntFromSeed(seed, minStart, maxStart);
 }
@@ -1276,10 +1309,6 @@ export class RoomStore {
         player.library.syncStatus = "ready";
       }
     }
-    if (session?.sourceMode === "players_liked") {
-      this.startPlayersLikedPoolBuild(session);
-    }
-
     return joined.value;
   }
 
@@ -1364,7 +1393,6 @@ export class RoomStore {
           }
         }
       }
-      this.startPlayersLikedPoolBuild(session);
     }
     this.resetReadyStates(session);
     return { status: "ok" as const, mode: session.sourceMode };
@@ -1436,11 +1464,10 @@ export class RoomStore {
 
     player.library.includeInPool[provider] = includeInPool;
     if (session.sourceMode === "players_liked") {
-      session.poolBuild.status = "building";
+      session.poolBuild.status = "idle";
       session.poolBuild.mergedTracksCount = 0;
       session.poolBuild.playableTracksCount = 0;
       session.poolBuild.errorCode = null;
-      this.startPlayersLikedPoolBuild(session);
     }
     this.resetReadyStates(session);
     return {
@@ -1474,11 +1501,10 @@ export class RoomStore {
     }
 
     if (session.sourceMode === "players_liked") {
-      session.poolBuild.status = "building";
+      session.poolBuild.status = "idle";
       session.poolBuild.mergedTracksCount = 0;
       session.poolBuild.playableTracksCount = 0;
       session.poolBuild.errorCode = null;
-      this.startPlayersLikedPoolBuild(session);
     }
 
     return {
@@ -1513,9 +1539,6 @@ export class RoomStore {
     session.players.delete(targetPlayerId);
     this.ensureHost(session);
     this.resetReadyStates(session);
-    if (session.sourceMode === "players_liked") {
-      this.startPlayersLikedPoolBuild(session);
-    }
     return { status: "ok" as const, playerCount: session.players.size };
   }
 
@@ -1535,9 +1558,6 @@ export class RoomStore {
     this.ensureHost(session);
     if (session.manager.state() === "waiting") {
       this.resetReadyStates(session);
-      if (session.sourceMode === "players_liked") {
-        this.startPlayersLikedPoolBuild(session);
-      }
     }
 
     return { status: "ok" as const, playerCount: session.players.size, hostPlayerId: session.hostPlayerId };
@@ -2004,24 +2024,6 @@ export class RoomStore {
     if (!session) return null;
 
     this.progressSession(session, this.now());
-    if (session.manager.state() === "waiting" && session.sourceMode === "players_liked") {
-      const contributors = this.playersLikedContributors(session);
-      const canBuild = contributors.length >= session.playersLikedRules.minContributors;
-      const nowMs = this.now();
-      const enoughCooldown =
-        !session.poolBuild.lastBuiltAtMs ||
-        nowMs - session.poolBuild.lastBuiltAtMs >= PLAYERS_LIKED_REBUILD_COOLDOWN_MS;
-      if (
-        canBuild &&
-        session.poolBuild.status !== "building" &&
-        session.poolBuild.status !== "ready" &&
-        enoughCooldown &&
-        !this.roomLikedPoolJobs.has(session.roomCode)
-      ) {
-        this.startPlayersLikedPoolBuild(session);
-      }
-    }
-
     const state = session.manager.state() as GameState;
     const currentRound = session.manager.round();
     const activeTrack = currentRound > 0 ? (session.trackPool[currentRound - 1] ?? null) : null;
@@ -2101,6 +2103,11 @@ export class RoomStore {
               embedUrl: revealMedia.embedUrl,
             }
           : null;
+    const suggestionTracks =
+      session.trackPool.length > 0
+        ? [...session.trackPool, ...session.distractorTrackPool]
+        : session.playersLikedPool;
+    const answerSuggestions = collectRoomAnswerSuggestions(suggestionTracks);
 
     return {
       roomCode: session.roomCode,
@@ -2154,6 +2161,68 @@ export class RoomStore {
       reveal: revealMedia,
       leaderboard,
       chatMessages: session.chatMessages.slice(-80),
+      answerSuggestions,
+    };
+  }
+
+  async roomAnswerSuggestions(roomCode: string, playerId?: string) {
+    const session = this.rooms.get(roomCode);
+    if (!session) {
+      return { status: "room_not_found" as const };
+    }
+    if (playerId && !session.players.has(playerId)) {
+      return { status: "player_not_found" as const };
+    }
+
+    const fallbackTracks =
+      session.trackPool.length > 0
+        ? [...session.trackPool, ...session.distractorTrackPool]
+        : session.playersLikedPool;
+
+    if (session.sourceMode !== "players_liked") {
+      return {
+        status: "ok" as const,
+        suggestions: collectRoomAnswerSuggestions(fallbackTracks, ROOM_ANSWER_SUGGESTION_LIMIT),
+      };
+    }
+
+    const contributors = this.playersLikedContributors(session);
+    const userIds = new Set<string>();
+    const providerSet = new Set<LibraryProvider>();
+    for (const contributor of contributors) {
+      if (contributor.userId) {
+        userIds.add(contributor.userId);
+      }
+      if (this.canUsePlayersLikedProvider(contributor, "spotify")) {
+        providerSet.add("spotify");
+      }
+      if (this.canUsePlayersLikedProvider(contributor, "deezer")) {
+        providerSet.add("deezer");
+      }
+    }
+
+    if (userIds.size <= 0 || providerSet.size <= 0) {
+      return {
+        status: "ok" as const,
+        suggestions: collectRoomAnswerSuggestions(fallbackTracks, ROOM_ANSWER_SUGGESTION_LIMIT),
+      };
+    }
+
+    const rows = await userLikedTrackRepository.listForUsers({
+      userIds: [...userIds],
+      providers: [...providerSet],
+      limit: ROOM_BULK_ANSWER_TRACK_LIMIT,
+      orderBy: "random",
+      randomSeed: `${roomCode}:${session.createdAtMs}`,
+    });
+    const fromLibrary = collectRoomAnswerSuggestions(rows, ROOM_BULK_ANSWER_SUGGESTION_LIMIT);
+    if (fromLibrary.length > 0) {
+      return { status: "ok" as const, suggestions: fromLibrary };
+    }
+
+    return {
+      status: "ok" as const,
+      suggestions: collectRoomAnswerSuggestions(fallbackTracks, ROOM_ANSWER_SUGGESTION_LIMIT),
     };
   }
 

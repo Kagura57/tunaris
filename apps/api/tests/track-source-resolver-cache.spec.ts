@@ -297,6 +297,127 @@ describe("track source resolver cache behavior", () => {
     });
   });
 
+  it("prefers official audio when only off-version live clip is available", async () => {
+    vi.spyOn(resolvedTrackRepository, "getBySource").mockResolvedValue(null);
+    fetchSpotifyPlaylistTracksMock.mockResolvedValue([
+      {
+        provider: "spotify",
+        id: "sp-arch-1",
+        title: "The Distant Blue",
+        artist: "Architects",
+        previewUrl: null,
+        sourceUrl: "https://open.spotify.com/track/sp-arch-1",
+      },
+    ]);
+
+    searchYouTubeMock.mockImplementation(async (query: string) => {
+      const normalized = query.toLowerCase();
+      if (normalized.includes("official video")) {
+        return [
+          {
+            provider: "youtube",
+            id: "yt-arch-live-1",
+            title: "Architects - The Distant Blue (Live) Official Video",
+            artist: "Architects",
+            previewUrl: null,
+            sourceUrl: "https://www.youtube.com/watch?v=yt-arch-live-1",
+          },
+        ];
+      }
+      if (normalized.includes("official audio")) {
+        return [
+          {
+            provider: "youtube",
+            id: "yt-arch-audio-1",
+            title: "Architects - The Distant Blue (Official Audio)",
+            artist: "Architects",
+            previewUrl: null,
+            sourceUrl: "https://www.youtube.com/watch?v=yt-arch-audio-1",
+          },
+        ];
+      }
+      return [
+        {
+          provider: "youtube",
+          id: "yt-arch-live-fallback",
+          title: "Architects - The Distant Blue live at old show",
+          artist: "Architects",
+          previewUrl: null,
+          sourceUrl: "https://www.youtube.com/watch?v=yt-arch-live-fallback",
+        },
+      ];
+    });
+
+    const resolved = await resolveTrackPoolFromSource({
+      categoryQuery: "spotify:playlist:cache123",
+      size: 1,
+    });
+
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]).toMatchObject({
+      provider: "youtube",
+      id: "yt-arch-audio-1",
+      title: "The Distant Blue",
+      artist: "Architects",
+    });
+  });
+
+  it("avoids short-version clip when artist-matched full version exists", async () => {
+    vi.spyOn(resolvedTrackRepository, "getBySource").mockResolvedValue(null);
+    fetchSpotifyPlaylistTracksMock.mockResolvedValue([
+      {
+        provider: "spotify",
+        id: "sp-stardom-1",
+        title: "STARDOM",
+        artist: "King Gnu",
+        previewUrl: null,
+        sourceUrl: "https://open.spotify.com/track/sp-stardom-1",
+      },
+    ]);
+
+    searchYouTubeMock.mockImplementation(async (query: string) => {
+      const normalized = query.toLowerCase();
+      if (normalized.includes("official video")) {
+        return [
+          {
+            provider: "youtube",
+            id: "yt-stardom-short-1",
+            title: "Stardom MV Short ver",
+            artist: "Some Channel",
+            previewUrl: null,
+            sourceUrl: "https://www.youtube.com/watch?v=yt-stardom-short-1",
+          },
+        ];
+      }
+      if (normalized.includes("official audio")) {
+        return [
+          {
+            provider: "youtube",
+            id: "yt-stardom-audio-1",
+            title: "King Gnu - STARDOM (Official Audio)",
+            artist: "King Gnu",
+            previewUrl: null,
+            sourceUrl: "https://www.youtube.com/watch?v=yt-stardom-audio-1",
+          },
+        ];
+      }
+      return [];
+    });
+
+    const resolved = await resolveTrackPoolFromSource({
+      categoryQuery: "spotify:playlist:cache123",
+      size: 1,
+    });
+
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]).toMatchObject({
+      provider: "youtube",
+      id: "yt-stardom-audio-1",
+      title: "STARDOM",
+      artist: "King Gnu",
+    });
+  });
+
   it("filters ad-like source tracks before youtube prioritization", async () => {
     fetchSpotifyPlaylistTracksMock.mockResolvedValue([
       {

@@ -1047,7 +1047,7 @@ describe("RoomStore gameplay progression", () => {
     }
 
     expect(snapshot?.isResolvingTracks).toBe(false);
-    expect(snapshot?.poolBuild.status).toBe("failed");
+    expect(snapshot?.poolBuild.status).toBe("idle");
     expect(snapshot?.canStart).toBe(true);
   });
 
@@ -1173,7 +1173,7 @@ describe("RoomStore gameplay progression", () => {
     expect(lobby?.players[0]?.libraryContribution.includeInPool.spotify).toBe(true);
   });
 
-  it("exposes resolving state and updates merged/playable counts after players_liked sync", async () => {
+  it("exposes resolving state only during start and updates merged/playable counts after players_liked sync", async () => {
     const likedTracks: MusicTrack[] = Array.from({ length: 12 }, (_, index) => ({
       provider: "youtube",
       id: `sync-${index + 1}`,
@@ -1209,13 +1209,17 @@ describe("RoomStore gameplay progression", () => {
     );
     expect(contribution.status).toBe("ok");
 
+    const startPromise = store.startGame(created.roomCode, host.playerId);
     const syncingSnapshot = store.roomState(created.roomCode);
     expect(syncingSnapshot?.isResolvingTracks).toBe(true);
-    expect(syncingSnapshot?.poolBuild.status).toBe("building");
+    expect(syncingSnapshot?.poolBuild.status).toBe("idle");
     expect(syncingSnapshot?.poolBuild.mergedTracksCount).toBe(0);
     expect(syncingSnapshot?.poolBuild.playableTracksCount).toBe(0);
 
     pendingLikedFetch.resolve(likedTracks);
+    const started = await startPromise;
+    expect(started).toMatchObject({ ok: true });
+
     let resolvedSnapshot = store.roomState(created.roomCode);
     for (let attempt = 0; attempt < 30 && resolvedSnapshot?.isResolvingTracks; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 0));

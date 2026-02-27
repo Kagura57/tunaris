@@ -233,12 +233,12 @@ function buildYouTubeQueryPlan(track: Pick<MusicTrack, "title" | "artist">): You
       ]),
     },
     {
-      intent: "fallback",
-      queries: uniqueQueries([`${artist} ${title}`, `${artist} ${fallbackTitle}`]),
+      intent: "official_audio",
+      queries: uniqueQueries([`${artist} ${title} official audio`, `${artist} ${fallbackTitle} official audio`]),
     },
     {
-      intent: "official_audio",
-      queries: uniqueQueries([`${artist} ${title} official audio`]),
+      intent: "fallback",
+      queries: uniqueQueries([`${artist} ${title}`, `${artist} ${fallbackTitle}`]),
     },
   ].filter((step) => step.queries.length > 0);
 }
@@ -399,8 +399,10 @@ type ScoredYouTubeCandidate = {
   isClip: boolean;
   isAudio: boolean;
   artistChannel: boolean;
+  artistMatched: boolean;
   titleTokenOverlap: number;
   titleTokenCount: number;
+  offVersionMismatch: boolean;
 };
 
 const TITLE_TOKEN_STOP_WORDS = new Set([
@@ -443,16 +445,29 @@ function scoreYouTubeCandidate(
   const candidateTitleText = normalizeSearchText(candidate.title);
   const sourceArtist = normalizeSearchText(source.artist);
   const sourceTitle = normalizeSearchText(sanitizeTrackSearchValue(source.title));
+  const sourceRawTitle = normalizeSearchText(source.title);
   const sourceTitleTokens = titleTokens(sourceTitle);
   const candidateTitleTokens = new Set(titleTokens(candidateTitleText));
   const candidateTitleTokenCount = candidateTitleTokens.size;
   const artistChannel = isArtistChannel(candidate.artist, source.artist);
+  const artistMatched = sourceArtist.length <= 0 || candidateText.includes(sourceArtist) || artistChannel;
   const isClip = YOUTUBE_CLIP_PATTERNS.some((pattern) => pattern.test(candidateTitleText));
   const isAudio =
     YOUTUBE_AUDIO_PATTERNS.some((pattern) => pattern.test(candidateTitleText)) ||
     (sourceTitle.length > 0 &&
       candidateTitleText.includes(sourceTitle) &&
       normalizeSearchText(candidate.artist).includes("topic"));
+  const offVersionMismatch =
+    (/\blive\b/i.test(candidateTitleText) && !/\blive\b/i.test(sourceRawTitle)) ||
+    (/\bcover\b/i.test(candidateTitleText) && !/\bcover\b/i.test(sourceRawTitle)) ||
+    (/\bkaraoke\b/i.test(candidateTitleText) && !/\bkaraoke\b/i.test(sourceRawTitle)) ||
+    (/\breaction\b/i.test(candidateTitleText) && !/\breaction\b/i.test(sourceRawTitle)) ||
+    (/\bnightcore\b/i.test(candidateTitleText) && !/\bnightcore\b/i.test(sourceRawTitle)) ||
+    (/\bslowed\b/i.test(candidateTitleText) && !/\bslowed\b/i.test(sourceRawTitle)) ||
+    (/\bsped\s*up\b/i.test(candidateTitleText) && !/\bsped\s*up\b/i.test(sourceRawTitle)) ||
+    (/\bshort\s*(ver|version)\b/i.test(candidateTitleText) &&
+      !/\bshort\s*(ver|version)\b/i.test(sourceRawTitle)) ||
+    (/\btv\s*size\b/i.test(candidateTitleText) && !/\btv\s*size\b/i.test(sourceRawTitle));
 
   let score = 0;
   let titleTokenOverlap = 0;
@@ -482,6 +497,8 @@ function scoreYouTubeCandidate(
   if (isAudio) score += 130;
   if (artistChannel && isClip) score += 220;
   if (artistChannel && isAudio) score += 120;
+  if (sourceArtist.length > 0 && !artistMatched) score -= 220;
+  if (offVersionMismatch) score -= 450;
   for (const pattern of YOUTUBE_DEPRIORITY_PATTERNS) {
     if (pattern.test(candidateText)) score -= 120;
   }
@@ -491,8 +508,10 @@ function scoreYouTubeCandidate(
     isClip,
     isAudio,
     artistChannel,
+    artistMatched,
     titleTokenOverlap,
     titleTokenCount: sourceTitleTokens.length,
+    offVersionMismatch,
   };
 }
 
@@ -513,13 +532,28 @@ function selectRankedYouTubeCandidate(
 
   let scoped = ranked;
   if (intent === "official_clip") {
-    scoped = ranked.filter(({ scored }) => scored.isClip && (scored.titleTokenCount <= 0 || scored.titleTokenOverlap > 0));
+    scoped = ranked.filter(
+      ({ scored }) =>
+        scored.isClip &&
+        !scored.offVersionMismatch &&
+        (scored.titleTokenCount <= 0 || scored.titleTokenOverlap > 0),
+    );
   } else if (intent === "official_audio") {
     scoped = ranked.filter(
-      ({ scored }) => scored.isAudio && !scored.isClip && (scored.titleTokenCount <= 0 || scored.titleTokenOverlap > 0),
+      ({ scored }) =>
+        scored.isAudio &&
+        !scored.isClip &&
+        !scored.offVersionMismatch &&
+        (scored.titleTokenCount <= 0 || scored.titleTokenOverlap > 0),
     );
   } else {
-    scoped = ranked.filter(({ scored }) => scored.titleTokenCount <= 0 || scored.titleTokenOverlap > 0);
+    const base = ranked.filter(({ scored }) => scored.titleTokenCount <= 0 || scored.titleTokenOverlap > 0);
+    const nonMismatch = base.filter(({ scored }) => !scored.offVersionMismatch);
+    scoped = nonMismatch.length > 0 ? nonMismatch : base;
+  }
+  const artistMatchedOnly = scoped.filter(({ scored }) => scored.artistMatched);
+  if (artistMatchedOnly.length > 0) {
+    scoped = artistMatchedOnly;
   }
   if (scoped.length <= 0) return null;
 
@@ -679,7 +713,9 @@ async function resolveYouTubePlayback(track: MusicTrack): Promise<YouTubePlaybac
       id: best.track.id,
       title: track.title,
       artist: track.artist,
-      durationSec: track.durationSec ?? best.track.durationSec ?? null,
+      // Prefer resolved YouTube duration when available; otherwise unknown.
+      // Using source-provider duration here can cause bad random seeks on mismatched/short clips.
+      durationSec: best.track.durationSec ?? null,
       previewUrl: null,
       sourceUrl: best.track.sourceUrl ?? `https://www.youtube.com/watch?v=${best.track.id}`,
     } satisfies MusicTrack;

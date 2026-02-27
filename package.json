@@ -11,6 +11,7 @@
     "db:migrate": "cd apps/api && bun run db:migrate",
     "docker:up": "docker compose up -d postgres redis",
     "docker:down": "docker compose down",
+    "changelog:add": "bun scripts/changelog-add.ts",
     "lint": "oxlint .",
     "format": "oxfmt --write .",
     "test": "bun test apps/api/tests packages/shared/src apps/web/src/routes",

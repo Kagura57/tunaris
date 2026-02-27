@@ -159,6 +159,7 @@ export type RoomState = {
     text: string;
     sentAtMs: number;
   }>;
+  answerSuggestions: string[];
 };
 
 export type RoomResults = {
@@ -590,6 +591,20 @@ export async function getRoomState(roomCode: string) {
 
 export async function getRealtimeSnapshot(roomCode: string) {
   return requestJson<RealtimeRoomSnapshot>(`/realtime/room/${encodeURIComponent(roomCode)}`);
+}
+
+export async function getRoomAnswerSuggestions(input: { roomCode: string; playerId?: string | null }) {
+  const params = new URLSearchParams();
+  const playerId = input.playerId?.trim() ?? "";
+  if (playerId.length > 0) {
+    params.set("playerId", playerId);
+  }
+  const query = params.toString();
+  return requestJson<{
+    ok: true;
+    roomCode: string;
+    suggestions: string[];
+  }>(`/quiz/answer-suggestions/${encodeURIComponent(input.roomCode)}${query.length > 0 ? `?${query}` : ""}`);
 }
 
 export async function getRoomResults(roomCode: string) {
