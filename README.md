@@ -1,17 +1,16 @@
 # Kwizik
 
-Kwizik is a real-time multiplayer music quiz game.
+Kwizik is a real-time multiplayer **anime blind test** game.
 
-Players join a room, pick a music source, answer during timed rounds, and compete on a live leaderboard.
+Players join a room, sync their AniList libraries, and guess anime names from AnimeThemes `.webm` openings/endings.
 
 ## Highlights
 
 - Real-time room flow: `waiting -> countdown -> playing -> reveal -> leaderboard -> results`
-- Multiplayer-ready lobby with host controls
-- Source discovery from multiple providers (Spotify, Deezer, etc.)
-- Gameplay playback is YouTube-only for consistent in-game media behavior
-- Text and MCQ rounds with score + streak system
-- Romanization support for Japanese titles/artists
+- AniList account linking + manual sync
+- AnimeThemes catalog mirror for playable OP/ED videos
+- Anime-name answer input with autocomplete (aliases + acronyms)
+- Guess phase hides video; reveal shows the same continuous media stream
 
 ## Tech Stack
 
@@ -29,8 +28,7 @@ apps/
   web/        Frontend (React/Vite)
 packages/
   shared/     Shared package(s)
-docs/         Plans, handoff notes, deployment docs
-scripts/      Project scripts (including changelog tooling)
+docs/         Plans and architecture docs
 ```
 
 ## Quick Start
@@ -81,44 +79,16 @@ bun run test
 bun run test:e2e
 ```
 
-## Changelist Workflow
-
-This repo includes a lightweight changelist workflow:
-
-- `CHANGELOG.md` stores an `Unreleased` section.
-- `bun run changelog:add -- "<title>"` appends a dated entry with current changed files.
-
-Examples:
-
-```bash
-bun run changelog:add -- "Improve lobby loading state"
-bun run changelog:add -- "Fix YouTube candidate ranking" --note "Reduced irrelevant matches"
-```
-
-Optional flags:
-
-- `--note "<text>"` can be repeated
-- `--all` keeps all detected file paths in the entry (default output is truncated for readability)
-
 ## Environment
 
 Main environment variables are documented in `.env.example`.
 
-Music-related keys include:
+Anime-specific integration keys include:
 
-- Spotify (`SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, OAuth redirect URI)
-- Deezer (`DEEZER_APP_ID`, `DEEZER_APP_SECRET`, OAuth redirect URI)
-- YouTube (`YOUTUBE_API_KEY` or `YOUTUBE_API_KEYS`)
-- Optional fallback config (`YOUTUBE_INVIDIOUS_INSTANCES`, `YTMUSIC_SEARCH_URL`)
-
-## Deployment
-
-Railway deployment workflows are available in `.github/workflows/`.
-
-See:
-
-- `docs/railway-first-deploy.md`
+- AniList OAuth (`ANILIST_CLIENT_ID`, `ANILIST_CLIENT_SECRET`, `ANILIST_REDIRECT_URI`)
+- Optional AniList service token (`ANILIST_ACCESS_TOKEN`)
+- Redis (`REDIS_URL`) for sync workers and queues
 
 ## License
 
-Private repository. Add a license file if you plan to open-source the project.
+Private repository.

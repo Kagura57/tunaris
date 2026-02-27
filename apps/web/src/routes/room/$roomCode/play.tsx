@@ -56,35 +56,6 @@ const WAVE_BARS = Array.from({ length: 48 }, (_, index) => ({
   delaySec: (index % 8) * 0.08,
 }));
 
-function stripProviderMentions(value: string | null | undefined) {
-  if (!value) return "";
-  return value
-    .replace(/\bspotify\b/gi, "")
-    .replace(/\bdeezer\b/gi, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function playlistSecondaryLabel(playlist: UnifiedPlaylistOption) {
-  const description = stripProviderMentions(playlist.description);
-  if (description.length > 0) return description;
-  const owner = stripProviderMentions(playlist.owner);
-  if (owner.length > 0) return owner;
-  return "Playlist musicale";
-}
-
-function playlistDisplayName(name: string) {
-  const sanitized = stripProviderMentions(name);
-  return sanitized.length > 0 ? sanitized : name;
-}
-
-function formatTrackCountLabel(value: number | null | undefined) {
-  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
-    return `${Math.floor(value)} titres`;
-  }
-  return "Nombre de titres indisponible";
-}
-
 function withRomajiLabel(value: string, providedRomaji?: string | null) {
   if (!value) return value;
   const romaji = providedRomaji?.trim().length ? providedRomaji.trim() : toRomaji(value).trim();
@@ -1288,14 +1259,6 @@ export function RoomPlayPage() {
                   <div className="source-preset-grid">
                     <button
                       type="button"
-                      className={`source-preset-btn${sourceMode === "public_playlist" ? " active" : ""}`}
-                      onClick={() => onSelectSourceMode("public_playlist")}
-                    >
-                      <strong>Playlist publique</strong>
-                      <span>Recherche publique Deezer</span>
-                    </button>
-                    <button
-                      type="button"
                       className={`source-preset-btn${sourceMode === "anilist_union" ? " active" : ""}`}
                       onClick={() => onSelectSourceMode("anilist_union")}
                     >
@@ -1303,82 +1266,6 @@ export function RoomPlayPage() {
                       <span>Union des listes des joueurs connectés</span>
                     </button>
                   </div>
-
-                  {sourceMode === "public_playlist" && (
-                    <>
-                      <div className="playlist-search-shell">
-                        <p className="playlist-search-kicker">Recherche playlist Deezer</p>
-                        <div className="playlist-search-input-wrap">
-                          <input
-                            id="playlist-search-input"
-                            aria-label="Recherche playlist"
-                            value={playlistQuery}
-                            onChange={(event) => setPlaylistQuery(event.currentTarget.value)}
-                            maxLength={120}
-                            placeholder="Ex: top hits, rap 2000, anime openings"
-                          />
-                        </div>
-                      </div>
-                      {typedPlaylistQuery.length < 2 && (
-                        <p className="status">Tape au moins 2 caractères pour chercher une playlist.</p>
-                      )}
-                      {typedPlaylistQuery.length >= 2 &&
-                        typedPlaylistQuery !== normalizedPlaylistQuery && (
-                          <p className="status">Recherche en cours...</p>
-                        )}
-                      {typedPlaylistQuery.length >= 2 &&
-                        typedPlaylistQuery === normalizedPlaylistQuery &&
-                        playlistSearchQuery.isPending && (
-                        <p className="status">Recherche en cours...</p>
-                      )}
-                      {typedPlaylistQuery.length >= 2 &&
-                        typedPlaylistQuery === normalizedPlaylistQuery &&
-                        playlistSearchQuery.isError && (
-                        <p className="status">Recherche temporairement indisponible.</p>
-                      )}
-                      {typedPlaylistQuery.length >= 2 &&
-                        typedPlaylistQuery === normalizedPlaylistQuery &&
-                        !playlistSearchQuery.isPending &&
-                        !playlistSearchQuery.isError &&
-                        playlistOptions.length === 0 && (
-                          <p className="status">Aucun résultat pour cette recherche.</p>
-                        )}
-                      <div className="playlist-card-grid">
-                        {playlistOptions.map((playlist) => (
-                          <button
-                            key={`${playlist.provider}:${playlist.id}`}
-                            type="button"
-                            className={`playlist-card-btn${state.sourceConfig.publicPlaylist?.sourceQuery === playlist.sourceQuery ? " active" : ""}`}
-                            onClick={() => publicPlaylistMutation.mutate(playlist)}
-                            disabled={publicPlaylistMutation.isPending}
-                          >
-                            {playlist.imageUrl ? (
-                              <img src={playlist.imageUrl} alt={playlist.name} loading="lazy" />
-                            ) : (
-                              <div className="playlist-card-placeholder" aria-hidden="true" />
-                            )}
-                            <div>
-                              <strong>{withRomajiLabel(playlistDisplayName(playlist.name))}</strong>
-                              <p>{playlistSecondaryLabel(playlist)}</p>
-                              <small>{formatTrackCountLabel(playlist.trackCount)}</small>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                      {typedPlaylistQuery.length >= 2 &&
-                        !playlistSearchQuery.isPending &&
-                        hasMorePlaylists && (
-                          <button
-                            className="ghost-btn"
-                            type="button"
-                            onClick={() => setPlaylistOffset((current) => current + 24)}
-                            disabled={playlistSearchQuery.isFetching}
-                          >
-                            {playlistSearchQuery.isFetching ? "Chargement..." : "Load more"}
-                          </button>
-                        )}
-                    </>
-                  )}
 
                   {sourceMode === "anilist_union" && (
                     <div className="panel-form">

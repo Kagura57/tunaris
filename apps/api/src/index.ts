@@ -7,16 +7,11 @@ import { providerMetricsSnapshot } from "./lib/provider-metrics";
 import { authRoutes } from "./routes/auth";
 import { accountRoutes } from "./routes/account";
 import { animeAutocompleteRoutes } from "./routes/anime/autocomplete";
-import { musicSearchRoute } from "./routes/music/search";
-import { musicLibraryRoutes } from "./routes/music/library";
-import { musicSourceRoutes } from "./routes/music/source";
-import { spotifyAuthDiagnostics } from "./routes/music/spotify-auth";
 import { quizRoutes } from "./routes/quiz";
 import { realtimeRoutes } from "./routes/realtime";
 import { roomRoutes } from "./routes/room";
 import { startAnimeThemesCatalogRefreshJob } from "./services/jobs/animethemes-catalog-refresh";
 import { startAniListSyncWorker } from "./services/jobs/anilist-sync-worker";
-import { startSpotifySyncWorker } from "./services/jobs/spotify-sync-worker";
 import { roomStore } from "./services/RoomStore";
 import { trackCache } from "./services/TrackCache";
 
@@ -40,22 +35,6 @@ function resolveStatus(status: unknown) {
 }
 
 function buildHealthDetailsPayload() {
-  const deezerEnabledRaw = readEnvVar("DEEZER_ENABLED");
-  const deezerEnabled =
-    typeof deezerEnabledRaw !== "string" || deezerEnabledRaw.trim().toLowerCase() !== "false";
-  const hasYouTubeApiKey =
-    typeof readEnvVar("YOUTUBE_API_KEY") === "string" &&
-    (readEnvVar("YOUTUBE_API_KEY")?.length ?? 0) > 0;
-  const hasYouTubeApiKeys =
-    typeof readEnvVar("YOUTUBE_API_KEYS") === "string" &&
-    (readEnvVar("YOUTUBE_API_KEYS")?.length ?? 0) > 0;
-  const hasYouTubeInvidiousInstances =
-    typeof readEnvVar("YOUTUBE_INVIDIOUS_INSTANCES") === "string" &&
-    (readEnvVar("YOUTUBE_INVIDIOUS_INSTANCES")?.length ?? 0) > 0;
-  const hasYTMusicSearchUrl =
-    typeof readEnvVar("YTMUSIC_SEARCH_URL") === "string" &&
-    (readEnvVar("YTMUSIC_SEARCH_URL")?.trim().length ?? 0) > 0;
-
   return {
     ok: true as const,
     service: "kwizik-api",
@@ -65,20 +44,11 @@ function buildHealthDetailsPayload() {
     trackCache: trackCache.stats(),
     providers: providerMetricsSnapshot(),
     integrations: {
-      spotify: spotifyAuthDiagnostics(),
-      deezerEnabled,
-      hasYouTubeApiKey,
-      hasYouTubeApiKeys,
-      hasYouTubeInvidiousInstances,
-      hasYTMusicSearchUrl,
       hasAniListAccessToken:
         typeof readEnvVar("ANILIST_ACCESS_TOKEN") === "string" &&
         (readEnvVar("ANILIST_ACCESS_TOKEN")?.length ?? 0) > 0,
       configuredSourceExamples: [
-        "spotify:popular",
-        "spotify:playlist:37i9dQZEVXbMDoHDwVN2tF",
-        "deezer:chart",
-        "deezer:playlist:3155776842",
+        "anilist:linked:union",
         "anilist:users:userA,userB",
       ],
     },
@@ -120,9 +90,6 @@ export const app = new Elysia()
   .use(authRoutes)
   .use(accountRoutes)
   .use(animeAutocompleteRoutes)
-  .use(musicSearchRoute)
-  .use(musicLibraryRoutes)
-  .use(musicSourceRoutes)
   .use(quizRoutes)
   .use(realtimeRoutes)
   .use(roomRoutes)
@@ -140,6 +107,5 @@ if (import.meta.main) {
   });
   startAnimeThemesCatalogRefreshJob();
   startAniListSyncWorker();
-  startSpotifySyncWorker();
   console.log(`Kwizik API running on http://0.0.0.0:${apiPort}`);
 }

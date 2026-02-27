@@ -827,7 +827,7 @@ describe("RoomStore gameplay progression", () => {
     const lobby = store.roomState(created.roomCode);
     expect(lobby?.state).toBe("waiting");
     expect(lobby?.players).toHaveLength(2);
-    expect(lobby?.categoryQuery).toBe("");
+    expect(lobby?.categoryQuery).toBe("anilist:linked:union");
     expect(lobby?.readyCount).toBe(0);
   });
 

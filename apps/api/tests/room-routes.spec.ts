@@ -25,6 +25,6 @@ describe("room snapshot", () => {
     expect(payload.round).toBe(0);
     expect(payload.playerCount).toBe(0);
     expect(payload.poolSize).toBe(0);
-    expect(payload.categoryQuery).toBe("");
+    expect(payload.categoryQuery).toBe("anilist:linked:union");
   });
 });
