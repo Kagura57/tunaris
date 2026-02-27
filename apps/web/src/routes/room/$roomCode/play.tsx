@@ -202,6 +202,7 @@ export function RoomPlayPage() {
   const [hasMorePlaylists, setHasMorePlaylists] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [spotifyRateLimitUntilMs, setSpotifyRateLimitUntilMs] = useState<number | null>(null);
+  const [startRetryNotBeforeMs, setStartRetryNotBeforeMs] = useState<number | null>(null);
   const youtubeIframeRef = useRef<HTMLIFrameElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lastPreviewRef = useRef<string | null>(null);
@@ -478,7 +479,17 @@ export function RoomPlayPage() {
         playerId: session.playerId,
       });
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
+      if (result.ok === false) {
+        const retryAfterMs =
+          typeof result.retryAfterMs === "number" && result.retryAfterMs > 0 ? result.retryAfterMs : 1_500;
+        autoStartRoundRef.current = 0;
+        setStartRetryNotBeforeMs(Date.now() + retryAfterMs);
+        setSpotifyRateLimitUntilMs(null);
+        snapshotQuery.refetch();
+        return;
+      }
+      setStartRetryNotBeforeMs(null);
       setSpotifyRateLimitUntilMs(null);
       snapshotQuery.refetch();
     },
@@ -486,18 +497,30 @@ export function RoomPlayPage() {
       if (error instanceof HttpStatusError && error.message === "SPOTIFY_RATE_LIMITED") {
         const retryAfterMs = error.retryAfterMs && error.retryAfterMs > 0 ? error.retryAfterMs : 10_000;
         setSpotifyRateLimitUntilMs(Date.now() + retryAfterMs);
+        setStartRetryNotBeforeMs(null);
         return;
       }
-      if (error instanceof HttpStatusError && error.message === "PLAYERS_LIBRARY_SYNCING") {
-        // Keep auto-start active while liked tracks are still being resolved.
+      if (
+        error instanceof HttpStatusError &&
+        (error.message === "PLAYERS_LIBRARY_SYNCING" || error.message === "PLAYLIST_TRACKS_RESOLVING")
+      ) {
+        const retryAfterMs = error.retryAfterMs && error.retryAfterMs > 0 ? error.retryAfterMs : 1_500;
+        // Keep auto-start active while tracks are still being resolved.
         autoStartRoundRef.current = 0;
+        setStartRetryNotBeforeMs(Date.now() + retryAfterMs);
         setSpotifyRateLimitUntilMs(null);
         snapshotQuery.refetch();
         return;
       }
+      setStartRetryNotBeforeMs(null);
       setSpotifyRateLimitUntilMs(null);
     },
   });
+
+  const startRetryRemainingMs = useMemo(() => {
+    if (!startRetryNotBeforeMs) return 0;
+    return Math.max(0, startRetryNotBeforeMs - clockNow);
+  }, [clockNow, startRetryNotBeforeMs]);
 
   useEffect(() => {
     if (!state || !isHost || state.state !== "waiting") {
@@ -508,6 +531,7 @@ export function RoomPlayPage() {
       !state.allReady ||
       !state.canStart ||
       startMutation.isPending ||
+      startRetryRemainingMs > 0 ||
       isResolvingTracks ||
       isPlayersLikedPoolBuilding
     ) {
@@ -521,6 +545,7 @@ export function RoomPlayPage() {
     isHost,
     isResolvingTracks,
     isPlayersLikedPoolBuilding,
+    startRetryRemainingMs,
     startMutation,
     startMutation.isPending,
     state,
@@ -642,7 +667,8 @@ export function RoomPlayPage() {
   });
 
   const startErrorCode = startMutation.error instanceof Error ? startMutation.error.message : null;
-  const isNonBlockingStartError = startErrorCode === "PLAYERS_LIBRARY_SYNCING";
+  const isNonBlockingStartError =
+    startErrorCode === "PLAYERS_LIBRARY_SYNCING" || startErrorCode === "PLAYLIST_TRACKS_RESOLVING";
   const sourceModeErrorCode = sourceModeMutation.error instanceof Error ? sourceModeMutation.error.message : null;
   const publicPlaylistErrorCode =
     publicPlaylistMutation.error instanceof Error ? publicPlaylistMutation.error.message : null;
@@ -1298,6 +1324,7 @@ export function RoomPlayPage() {
                     onClick={() => startMutation.mutate()}
                     disabled={
                       startMutation.isPending ||
+                      startRetryRemainingMs > 0 ||
                       !state.canStart ||
                       isResolvingTracks ||
                       isPlayersLikedPoolBuilding
@@ -1498,6 +1525,10 @@ export function RoomPlayPage() {
               state?.sourceMode === "players_liked" &&
               state.poolBuild.status === "building" &&
               "Préparation de la playlist des joueurs... lancement automatique dès que c'est prêt."}
+            {isWaitingLobby &&
+              state?.sourceMode === "public_playlist" &&
+              startRetryRemainingMs > 0 &&
+              "Préparation de la playlist... lancement automatique dès que c'est prêt."}
             {startErrorCode === "HOST_ONLY" && "Seul le host peut lancer la partie."}
             {sourceModeErrorCode === "HOST_ONLY" && "Seul le host peut changer le mode source."}
             {publicPlaylistErrorCode === "HOST_ONLY" && "Seul le host peut choisir la playlist publique."}

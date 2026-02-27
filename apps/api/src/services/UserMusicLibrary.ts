@@ -590,6 +590,12 @@ function sourceSignature(track: Pick<MusicTrack, "title" | "artist">) {
   return `${track.title.toLowerCase()}::${track.artist.toLowerCase()}`;
 }
 
+function isYouTubePlayableTrack(track: Pick<MusicTrack, "provider" | "sourceUrl">) {
+  if (track.provider === "youtube") return true;
+  const source = track.sourceUrl?.toLowerCase() ?? "";
+  return source.includes("youtube.com/watch") || source.includes("youtu.be/");
+}
+
 export async function fetchUserLikedTracks(
   userId: string,
   provider: MusicProvider,
@@ -603,9 +609,11 @@ export async function fetchUserLikedTracksForProviders(input: {
   userId: string;
   providers: MusicProvider[];
   size: number;
+  allowExternalResolve?: boolean;
 }) {
   const userId = input.userId.trim();
   const safeSize = Math.max(1, Math.min(input.size, 120));
+  const allowExternalResolve = input.allowExternalResolve !== false;
   const providers = input.providers.filter(
     (provider): provider is LibraryProvider => provider === "spotify" || provider === "deezer",
   );
@@ -638,6 +646,31 @@ export async function fetchUserLikedTracksForProviders(input: {
   const fetchedCount = merged.length;
   const initialDedupeLimit = Math.max(safeSize * 3, safeSize);
   const deduped = dedupeTracks(merged, initialDedupeLimit);
+  const preResolvedPlayable = dedupeTracks(
+    deduped.filter((track) => isYouTubePlayableTrack(track)),
+    safeSize,
+  );
+  if (preResolvedPlayable.length >= safeSize || !allowExternalResolve) {
+    logEvent("info", "user_liked_tracks_resolved_from_synced_library", {
+      userId,
+      providers,
+      requestedSize: safeSize,
+      allowExternalResolve,
+      fetchWindowBase,
+      fetchWindowCap,
+      fetchAttempts,
+      fetchCountsByAttempt,
+      syncedFetchedCount: fetchedCount,
+      dedupedCount: deduped.length,
+      expandedDedupedCount: deduped.length,
+      secondPassTriggered: false,
+      topUpResolvedCount: 0,
+      preResolvedPlayableCount: preResolvedPlayable.length,
+      playableCount: preResolvedPlayable.length,
+    });
+    return preResolvedPlayable;
+  }
+
   let playable = await resolveTracksToPlayableYouTube(deduped, safeSize);
   let expandedDedupedCount = deduped.length;
   let topUpResolvedCount = 0;
@@ -665,6 +698,7 @@ export async function fetchUserLikedTracksForProviders(input: {
     userId,
     providers,
     requestedSize: safeSize,
+    allowExternalResolve,
     fetchWindowBase,
     fetchWindowCap,
     fetchAttempts,
@@ -674,6 +708,7 @@ export async function fetchUserLikedTracksForProviders(input: {
     expandedDedupedCount,
     secondPassTriggered,
     topUpResolvedCount,
+    preResolvedPlayableCount: preResolvedPlayable.length,
     playableCount: playable.length,
   });
   return playable;

@@ -930,6 +930,48 @@ describe("RoomStore gameplay progression", () => {
     });
   });
 
+  it("keeps deezer playlist start in resolving state when playable pool is still incomplete", async () => {
+    const fewTracks: MusicTrack[] = Array.from({ length: 3 }, (_, index) => ({
+      provider: "youtube",
+      id: `deezer-incomplete-${index + 1}`,
+      title: `Deezer Incomplete ${index + 1}`,
+      artist: `Artist ${index + 1}`,
+      previewUrl: null,
+      sourceUrl: `https://www.youtube.com/watch?v=deezer-incomplete-${index + 1}`,
+    }));
+
+    const store = new RoomStore({
+      getTrackPool: async () => fewTracks,
+      config: {
+        maxRounds: 10,
+        countdownMs: 5,
+        playingMs: 20,
+        revealMs: 5,
+        leaderboardMs: 5,
+      },
+    });
+
+    const created = store.createRoom();
+    const host = store.joinRoom(created.roomCode, "Host");
+    expect(host.status).toBe("ok");
+    if (host.status !== "ok") return;
+
+    const sourceSet = store.setRoomSource(
+      created.roomCode,
+      host.value.playerId,
+      "deezer:playlist:3155776842",
+    );
+    expect(sourceSet.status).toBe("ok");
+    const ready = store.setPlayerReady(created.roomCode, host.value.playerId, true);
+    expect(ready.status).toBe("ok");
+
+    const started = await store.startGame(created.roomCode, host.value.playerId);
+    expect(started).toMatchObject({
+      ok: false,
+      error: "PLAYLIST_TRACKS_RESOLVING",
+    });
+  });
+
   it("supports players_liked mode with linked provider contributions", async () => {
     const likedTracks: MusicTrack[] = Array.from({ length: 12 }, (_, index) => ({
       provider: "youtube",
@@ -1212,7 +1254,7 @@ describe("RoomStore gameplay progression", () => {
     const startPromise = store.startGame(created.roomCode, host.playerId);
     const syncingSnapshot = store.roomState(created.roomCode);
     expect(syncingSnapshot?.isResolvingTracks).toBe(true);
-    expect(syncingSnapshot?.poolBuild.status).toBe("idle");
+    expect(syncingSnapshot?.poolBuild.status).toBe("building");
     expect(syncingSnapshot?.poolBuild.mergedTracksCount).toBe(0);
     expect(syncingSnapshot?.poolBuild.playableTracksCount).toBe(0);
 

@@ -128,7 +128,9 @@ export const quizRoutes = new Elysia({ prefix: "/quiz" })
         set.status = 429;
       } else if (started.error === "NO_TRACKS_FOUND") {
         set.status = 422;
-      } else if (started.error === "PLAYERS_LIBRARY_NOT_READY" || started.error === "PLAYERS_LIBRARY_SYNCING") {
+      } else if (started.error === "PLAYERS_LIBRARY_SYNCING" || started.error === "PLAYLIST_TRACKS_RESOLVING") {
+        set.status = 202;
+      } else if (started.error === "PLAYERS_LIBRARY_NOT_READY") {
         set.status = 409;
       } else if (started.error === "PLAYER_NOT_FOUND") {
         set.status = 404;

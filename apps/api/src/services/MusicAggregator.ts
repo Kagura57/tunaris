@@ -156,6 +156,10 @@ function sourceUrlForProviderTrack(provider: LibraryProvider, sourceId: string) 
   return `https://www.deezer.com/track/${sourceId}`;
 }
 
+function sourceUrlForYouTubeTrack(videoId: string) {
+  return `https://www.youtube.com/watch?v=${videoId}`;
+}
+
 export async function buildSyncedUserLibraryTrackPool(input: {
   userId: string;
   providers: LibraryProvider[];
@@ -170,16 +174,20 @@ export async function buildSyncedUserLibraryTrackPool(input: {
     orderBy: "random",
     randomSeed,
   });
+  const rowsWithYouTube = rows.filter((row) => Boolean(row.youtubeVideoId));
+  const rowsWithoutYouTube = rows.filter((row) => !row.youtubeVideoId);
+  const prioritizedRows = [...rowsWithYouTube, ...rowsWithoutYouTube];
 
   const tracks: MusicTrack[] = [];
   const seen = new Set<string>();
-  for (const row of rows) {
+  for (const row of prioritizedRows) {
     const signature = `${row.title.toLowerCase()}::${row.artist.toLowerCase()}`;
     if (seen.has(signature)) continue;
     seen.add(signature);
+    const youtubeVideoId = row.youtubeVideoId?.trim() ?? "";
     tracks.push({
-      provider: row.provider,
-      id: row.sourceId,
+      provider: youtubeVideoId ? "youtube" : row.provider,
+      id: youtubeVideoId || row.sourceId,
       title: row.title,
       artist: row.artist,
       durationSec:
@@ -187,7 +195,7 @@ export async function buildSyncedUserLibraryTrackPool(input: {
           ? Math.max(0, Math.round(row.durationMs / 1000))
           : null,
       previewUrl: null,
-      sourceUrl: sourceUrlForProviderTrack(row.provider, row.sourceId),
+      sourceUrl: youtubeVideoId ? sourceUrlForYouTubeTrack(youtubeVideoId) : sourceUrlForProviderTrack(row.provider, row.sourceId),
     });
     if (tracks.length >= safeSize) break;
   }
@@ -199,6 +207,7 @@ export async function buildSyncedUserLibraryTrackPool(input: {
     orderBy: "random",
     loadedCount: tracks.length,
     rawCount: rows.length,
+    rowsWithYouTubeCount: rowsWithYouTube.length,
   });
 
   return tracks;

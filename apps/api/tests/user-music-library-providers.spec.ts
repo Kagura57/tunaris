@@ -134,4 +134,43 @@ describe("fetchUserLikedTracksForProviders", () => {
       },
     ]);
   });
+
+  it("skips external youtube resolve when allowExternalResolve is false", async () => {
+    const resolveSpy = vi.spyOn(trackSourceResolverModule, "resolveTracksToPlayableYouTube");
+    resolveSpy.mockResolvedValue([]);
+
+    await userLikedTrackRepository.replaceForUserProvider({
+      userId: "user-3",
+      provider: "spotify",
+      tracks: [
+        {
+          sourceId: "sp-only-db",
+          addedAtMs: Date.now(),
+          title: "DB Song",
+          artist: "DB Artist",
+          durationMs: 200_000,
+        },
+      ],
+    });
+
+    await resolvedTrackRepository.upsert({
+      provider: "spotify",
+      sourceId: "sp-only-db",
+      title: "DB Song",
+      artist: "DB Artist",
+      youtubeVideoId: null,
+      durationMs: 200_000,
+    });
+
+    const { fetchUserLikedTracksForProviders } = await import("../src/services/UserMusicLibrary");
+    const output = await fetchUserLikedTracksForProviders({
+      userId: "user-3",
+      providers: ["spotify"],
+      size: 10,
+      allowExternalResolve: false,
+    });
+
+    expect(resolveSpy).not.toHaveBeenCalled();
+    expect(output).toEqual([]);
+  });
 });

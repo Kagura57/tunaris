@@ -8,6 +8,7 @@ export type SyncedLibraryTrack = {
   sourceId: string;
   title: string;
   artist: string;
+  youtubeVideoId: string | null;
   durationMs: number | null;
   addedAtMs: number;
 };
@@ -148,6 +149,7 @@ export class UserLikedTrackRepository {
               sourceId: entry.sourceId,
               title: entry.title,
               artist: entry.artist,
+              youtubeVideoId: null,
               durationMs: entry.durationMs,
               addedAtMs: entry.addedAtMs,
             });
@@ -178,10 +180,11 @@ export class UserLikedTrackRepository {
       added_at: Date;
       title: string;
       artist: string;
+      youtube_video_id: string | null;
       duration_ms: number | null;
     }>(
       `
-        select ult.user_id, ult.provider, ult.source_id, ult.added_at, rt.title, rt.artist, rt.duration_ms
+        select ult.user_id, ult.provider, ult.source_id, ult.added_at, rt.title, rt.artist, rt.youtube_video_id, rt.duration_ms
         from user_liked_tracks ult
         inner join resolved_tracks rt
           on rt.provider = ult.provider
@@ -204,6 +207,7 @@ export class UserLikedTrackRepository {
         sourceId: row.source_id,
         title: row.title,
         artist: row.artist,
+        youtubeVideoId: row.youtube_video_id,
         durationMs: row.duration_ms,
         addedAtMs: row.added_at.getTime(),
       });

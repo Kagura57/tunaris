@@ -312,6 +312,29 @@ async function requestJson<T>(path: string, init?: RequestOptions): Promise<T> {
           // Ignore payload parsing failures for non-json error responses.
         }
 
+        const isStartTransientConflict =
+          method === "POST" &&
+          pathWithSlash === "/quiz/start" &&
+          response.status === 409 &&
+          (details === "PLAYERS_LIBRARY_SYNCING" || details === "PLAYLIST_TRACKS_RESOLVING");
+
+        if (isStartTransientConflict) {
+          logClientEvent("info", "api_request_expected_transient_conflict", {
+            requestId: correlatedRequestId,
+            base,
+            path,
+            method,
+            status: response.status,
+            error: details,
+            retryAfterMs,
+          });
+          return {
+            ok: false,
+            error: details,
+            retryAfterMs,
+          } as T;
+        }
+
         const shouldTryNextBase =
           response.status === 404 &&
           baseIndex < baseCandidates.length - 1 &&
@@ -416,15 +439,22 @@ export async function getPublicRooms() {
 }
 
 export async function startRoom(input: { roomCode: string; playerId: string }) {
-  return requestJson<{
-    ok: true;
-    state: string;
-    poolSize: number;
-    categoryQuery: string;
-    sourceMode?: "public_playlist" | "players_liked";
-    totalRounds: number;
-    deadlineMs: number | null;
-  }>("/quiz/start", {
+  return requestJson<
+    | {
+        ok: true;
+        state: string;
+        poolSize: number;
+        categoryQuery: string;
+        sourceMode?: "public_playlist" | "players_liked";
+        totalRounds: number;
+        deadlineMs: number | null;
+      }
+    | {
+        ok: false;
+        error: "PLAYERS_LIBRARY_SYNCING" | "PLAYLIST_TRACKS_RESOLVING";
+        retryAfterMs?: number | null;
+      }
+  >("/quiz/start", {
     method: "POST",
     body: JSON.stringify(input),
   });

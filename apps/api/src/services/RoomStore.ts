@@ -132,6 +132,7 @@ const YOUTUBE_RANDOM_START_MIN_DURATION_SEC = 45;
 const MCQ_REQUIRED_CHOICES = 4;
 const START_POOL_RETRY_ATTEMPTS = 3;
 const START_POOL_RETRY_DELAY_MS = 900;
+const PLAYERS_LIKED_POOL_BUILD_TIMEOUT_MS = 45_000;
 const ROOM_ANSWER_SUGGESTION_LIMIT = 1_000;
 const ROOM_BULK_ANSWER_TRACK_LIMIT = 16_000;
 const ROOM_BULK_ANSWER_SUGGESTION_LIMIT = 24_000;
@@ -145,6 +146,7 @@ type RoomStoreDependencies = {
     userId: string;
     providers: LibraryProvider[];
     size: number;
+    allowExternalResolve?: boolean;
   }) => Promise<MusicTrack[]>;
   config?: Partial<RoundConfig>;
 };
@@ -612,6 +614,7 @@ export class RoomStore {
     userId: string;
     providers: LibraryProvider[];
     size: number;
+    allowExternalResolve?: boolean;
   }) => Promise<MusicTrack[]>;
   private readonly config: RoundConfig;
 
@@ -868,9 +871,14 @@ export class RoomStore {
     this.roomLikedPoolJobs.delete(roomCode);
   }
 
-  private async buildPlayersLikedTrackPool(session: RoomSession, requestedRounds: number) {
+  private async buildPlayersLikedTrackPool(
+    session: RoomSession,
+    requestedRounds: number,
+    options: { allowExternalResolve?: boolean } = {},
+  ) {
     const safeRounds = Math.max(1, requestedRounds);
-    // Keep players_liked startup close to requested rounds to avoid massive YouTube resolution bursts.
+    const allowExternalResolve = options.allowExternalResolve === true;
+    // Keep players_liked startup close to requested rounds to avoid massive resolution bursts.
     const targetCandidateSize = Math.min(
       TRACK_POOL_MAX_CANDIDATES,
       safeRounds + PLAYERS_LIKED_TARGET_BUFFER,
@@ -895,8 +903,9 @@ export class RoomStore {
           userId: contributor.userId,
           providers,
           size: targetCandidateSize,
+          allowExternalResolve,
         }),
-        20_000,
+        PLAYERS_LIKED_POOL_BUILD_TIMEOUT_MS,
         "PLAYERS_LIBRARY_TIMEOUT",
       );
       fetchedTotal += fetched.length;
@@ -1666,6 +1675,9 @@ export class RoomStore {
           error: "PLAYERS_LIBRARY_NOT_READY" as const,
         };
       }
+      if (session.poolBuild.status === "idle" || session.poolBuild.status === "failed") {
+        this.startPlayersLikedPoolBuild(session);
+      }
       if (session.poolBuild.status === "building") {
         const waitDeadlineMs = Date.now() + 12_000;
         while (session.poolBuild.status === "building") {
@@ -1684,12 +1696,14 @@ export class RoomStore {
           return {
             ok: false as const,
             error: "PLAYERS_LIBRARY_SYNCING" as const,
+            retryAfterMs: 1_500,
           };
         }
       }
     }
-
     const resolvedQuery = this.sourceQueryForSession(session);
+    const isDeezerPlaylistSource =
+      session.sourceMode === "public_playlist" && resolvedQuery.toLowerCase().startsWith("deezer:playlist:");
     const startupLoadStartedAt = Date.now();
     logEvent("info", "room_start_trackpool_loading_begin", {
       roomCode,
@@ -1733,7 +1747,7 @@ export class RoomStore {
         startPoolStats = await this.resolveTracksWithFlag(
           session,
           async () => session.sourceMode === "players_liked"
-            ? await this.buildPlayersLikedTrackPool(session, poolSize)
+            ? await this.buildPlayersLikedTrackPool(session, poolSize, { allowExternalResolve: true })
             : await this.buildStartTrackPool(resolvedQuery, poolSize),
         );
         for (
@@ -1753,7 +1767,7 @@ export class RoomStore {
           startPoolStats = await this.resolveTracksWithFlag(
             session,
             async () => session.sourceMode === "players_liked"
-              ? await this.buildPlayersLikedTrackPool(session, poolSize)
+              ? await this.buildPlayersLikedTrackPool(session, poolSize, { allowExternalResolve: true })
               : await this.buildStartTrackPool(resolvedQuery, poolSize),
           );
         }
@@ -1788,6 +1802,15 @@ export class RoomStore {
           return {
             ok: false as const,
             error: "PLAYERS_LIBRARY_SYNCING" as const,
+            retryAfterMs: 1_500,
+          };
+        }
+
+        if (isDeezerPlaylistSource) {
+          return {
+            ok: false as const,
+            error: "PLAYLIST_TRACKS_RESOLVING" as const,
+            retryAfterMs: 1_500,
           };
         }
 
@@ -1836,6 +1859,22 @@ export class RoomStore {
           ok: false as const,
           error: "SPOTIFY_RATE_LIMITED" as const,
           retryAfterMs: spotifyPlaylistRateLimitRetryAfterMs(),
+        };
+      }
+
+      if (isDeezerPlaylistSource) {
+        logEvent("info", "room_start_deezer_playlist_still_resolving", {
+          roomCode,
+          categoryQuery: resolvedQuery,
+          requestedPoolSize: poolSize,
+          selectedPoolSize: session.trackPool.length,
+          candidatePoolSize: startPoolStats.candidateCount,
+          retryAfterMs: 1_500,
+        });
+        return {
+          ok: false as const,
+          error: "PLAYLIST_TRACKS_RESOLVING" as const,
+          retryAfterMs: 1_500,
         };
       }
 
