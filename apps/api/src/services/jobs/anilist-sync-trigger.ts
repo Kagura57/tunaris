@@ -1,6 +1,5 @@
 import { aniListSyncRunRepository } from "../../repositories/AniListSyncRunRepository";
 import { enqueueAniListSyncJob, isAniListSyncQueueConfigured } from "./anilist-sync-queue";
-import { runAniListSyncJob } from "./anilist-sync-worker";
 
 function normalize(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -15,20 +14,14 @@ export async function queueAniListSyncForUser(userIdInput: unknown) {
   const run = await aniListSyncRunRepository.createQueued(userId);
 
   if (!isAniListSyncQueueConfigured()) {
-    try {
-      await runAniListSyncJob({
-        userId,
-        runId: run.id,
-      });
-    } catch {
-      // The run status is already set to error by runAniListSyncJob.
-    }
-    return {
-      queued: true as const,
-      mode: "inline" as const,
+    await aniListSyncRunRepository.update({
       runId: run.id,
-      jobId: null,
-    };
+      status: "error",
+      progress: 0,
+      message: "QUEUE_UNAVAILABLE",
+      finishedAtMs: Date.now(),
+    });
+    return { queued: false as const, reason: "QUEUE_UNAVAILABLE" as const, runId: run.id };
   }
 
   const job = await enqueueAniListSyncJob({
@@ -37,20 +30,14 @@ export async function queueAniListSyncForUser(userIdInput: unknown) {
   });
 
   if (!job) {
-    try {
-      await runAniListSyncJob({
-        userId,
-        runId: run.id,
-      });
-    } catch {
-      // The run status is already set to error by runAniListSyncJob.
-    }
-    return {
-      queued: true as const,
-      mode: "inline" as const,
+    await aniListSyncRunRepository.update({
       runId: run.id,
-      jobId: null,
-    };
+      status: "error",
+      progress: 0,
+      message: "ENQUEUE_FAILED",
+      finishedAtMs: Date.now(),
+    });
+    return { queued: false as const, reason: "ENQUEUE_FAILED" as const, runId: run.id };
   }
 
   return {
