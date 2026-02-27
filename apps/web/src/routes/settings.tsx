@@ -6,6 +6,7 @@ import {
   getAniListLibrarySyncStatus,
   getAniListLinkStatus,
   getAuthSession,
+  HttpStatusError,
   queueAniListLibrarySync,
   signOutAccount,
 } from "../lib/api";
@@ -151,6 +152,11 @@ export function SettingsPage() {
   const linkStatusMeta = anilistStatusMeta(linkStatus);
   const activeRun = anilistSyncStatusQuery.data?.run ?? null;
   const runStatus = activeRun?.status ?? "idle";
+  const connectErrorMessage =
+    connectMutation.error instanceof HttpStatusError &&
+    connectMutation.error.message === "PROVIDER_NOT_CONFIGURED"
+      ? "AniList OAuth n'est pas configure cote serveur (ANILIST_CLIENT_ID / ANILIST_REDIRECT_URI)."
+      : "Impossible de lancer la connexion AniList.";
 
   return (
     <section className="single-panel">
@@ -265,7 +271,7 @@ export function SettingsPage() {
               : "status"
           }
         >
-          {connectMutation.isError && "Impossible de lancer la connexion AniList."}
+          {connectMutation.isError && connectErrorMessage}
           {signOutMutation.isError && "Deconnexion impossible pour le moment."}
           {syncMutation.isError && "Impossible de lancer la synchronisation AniList."}
           {!syncMutation.isError && activeRun?.status === "error" && syncErrorMessage(activeRun.message)}
