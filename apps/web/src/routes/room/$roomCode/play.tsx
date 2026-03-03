@@ -718,7 +718,12 @@ export function RoomPlayPage() {
     onError: () => {
       setPhaseSkipVote(null);
     },
-    onSuccess: () => snapshotQuery.refetch(),
+    onSuccess: (result) => {
+      if (!result.accepted) {
+        setPhaseSkipVote(null);
+      }
+      snapshotQuery.refetch();
+    },
   });
 
   const mediaUnavailableMutation = useMutation({
@@ -752,13 +757,31 @@ export function RoomPlayPage() {
   });
 
   const answerMutation = useMutation({
-    mutationFn: (value: string) =>
-      submitRoomAnswer({
+    mutationFn: async (value: string) => {
+      const result = await submitRoomAnswer({
         roomCode,
         playerId: session.playerId ?? "",
         answer: value,
-      }),
-    onSuccess: () => snapshotQuery.refetch(),
+      });
+      if (!result.accepted) {
+        throw new Error("ANSWER_NOT_ACCEPTED");
+      }
+      return result;
+    },
+    onSuccess: (_result, value) => {
+      if (state?.state === "playing" && state.mode === "mcq") {
+        setSubmittedMcq({ round: state.round, choice: value });
+      }
+      if (state?.state === "playing" && state.mode === "text") {
+        setSubmittedText({ round: state.round, value });
+      }
+      snapshotQuery.refetch();
+    },
+    onError: () => {
+      setSubmittedMcq(null);
+      setSubmittedText(null);
+      snapshotQuery.refetch();
+    },
   });
 
   const answerDraftMutation = useMutation({
@@ -804,6 +827,7 @@ export function RoomPlayPage() {
   const kickErrorCode = kickMutation.error instanceof Error ? kickMutation.error.message : null;
   const replayErrorCode = replayMutation.error instanceof Error ? replayMutation.error.message : null;
   const skipErrorCode = skipMutation.error instanceof Error ? skipMutation.error.message : null;
+  const answerErrorCode = answerMutation.error instanceof Error ? answerMutation.error.message : null;
   const spotifyCooldownRemainingMs = useMemo(() => {
     if (!spotifyRateLimitUntilMs) return 0;
     return Math.max(0, spotifyRateLimitUntilMs - clockNow);
@@ -931,16 +955,15 @@ export function RoomPlayPage() {
     state?.state !== "playing" &&
     state?.state !== "results";
   const isResults = state?.state === "results";
+  const hasServerLockedGuess = state?.state === "playing" && Boolean(currentPlayer?.hasAnsweredCurrentRound);
   const mcqLocked =
     state?.state === "playing" &&
     state.mode === "mcq" &&
-    submittedMcq !== null &&
-    submittedMcq.round === state.round;
+    (hasServerLockedGuess || (submittedMcq !== null && submittedMcq.round === state.round));
   const textLocked =
     state?.state === "playing" &&
     state.mode === "text" &&
-    submittedText !== null &&
-    submittedText.round === state.round;
+    (hasServerLockedGuess || (submittedText !== null && submittedText.round === state.round));
   const roundLabel = `${state?.round ?? 0}/${state?.totalRounds ?? 0}`;
   const revealArtwork = state?.reveal ? revealArtworkUrl(state.reveal) : null;
   const hasLockedGuessVote =
@@ -1326,7 +1349,6 @@ export function RoomPlayPage() {
     if (autoSubmitSignatureRef.current === signature) return;
     autoSubmitSignatureRef.current = signature;
 
-    setSubmittedText({ round: state.round, value });
     answerMutation.mutate(value);
   }, [
     answer,
@@ -1345,14 +1367,12 @@ export function RoomPlayPage() {
     const value = answer.trim();
     if (!value || !session.playerId) return;
     autoSubmitSignatureRef.current = `${state.round}:${value.toLowerCase()}`;
-    setSubmittedText({ round: state.round, value });
     answerMutation.mutate(value);
   }
 
   function onSelectChoice(choice: string) {
     if (!state || state.state !== "playing" || state.mode !== "mcq") return;
     if (!session.playerId || mcqLocked) return;
-    setSubmittedMcq({ round: state.round, choice });
     answerMutation.mutate(choice);
   }
 
@@ -1938,7 +1958,9 @@ export function RoomPlayPage() {
             {chatMutation.isError && "Impossible d'envoyer le message."}
             {!session.playerId && "Tu dois rejoindre la room pour répondre."}
             {snapshotQuery.isError && "Synchronisation impossible."}
-            {answerMutation.isError && "Réponse refusée."}
+            {answerErrorCode === "ANSWER_NOT_ACCEPTED" &&
+              "Réponse non prise en compte (round expiré ou déjà validé)."}
+            {answerMutation.isError && answerErrorCode !== "ANSWER_NOT_ACCEPTED" && "Réponse refusée."}
             {mediaUnavailableMutation.isPending &&
               "Thème indisponible détecté, passage automatique au round suivant..."}
             {mediaUnavailableMutation.isError &&
@@ -1990,7 +2012,7 @@ export function RoomPlayPage() {
 
       <video
         ref={nextAnimePreloadRef}
-        className="blindtest-preload-video"
+        className="blindtest-preload-video kwizik-next-anime-preload"
         preload="auto"
         muted
         playsInline
