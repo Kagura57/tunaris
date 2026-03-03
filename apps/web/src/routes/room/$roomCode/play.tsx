@@ -33,6 +33,7 @@ const ROUND_MS = 20_000;
 const COUNTDOWN_MS = 3_000;
 const REVEAL_MS = 20_000;
 const LEADERBOARD_MS = 0;
+const ANIME_LOADING_STALL_REPORT_MS = 12_000;
 
 type SourceMode = "public_playlist" | "players_liked" | "anilist_union";
 type ThemeMode = "op_only" | "ed_only" | "mix";
@@ -1014,7 +1015,16 @@ export function RoomPlayPage() {
     if (!video) return;
     setAnimePlaybackStatus("buffering");
     applyAnimeRandomStart(video);
+    signalAnimeMediaReady();
     video.play().catch(() => undefined);
+  }
+
+  function handleAnimeCanPlay() {
+    const video = animeVideoRef.current;
+    if (video) {
+      applyAnimeRandomStart(video);
+    }
+    signalAnimeMediaReady();
   }
 
   function handleAnimeCanPlayThrough() {
@@ -1022,6 +1032,7 @@ export function RoomPlayPage() {
     if (video) {
       applyAnimeRandomStart(video);
     }
+    signalAnimeMediaReady();
   }
 
   function handleAnimePlaying() {
@@ -1131,44 +1142,53 @@ export function RoomPlayPage() {
   }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key]);
 
   useEffect(() => {
-    const selector = "link[data-kwizik-next-anime-preload='true']";
-    const head = document.head;
-    const existing = head.querySelector(selector) as HTMLLinkElement | null;
+    const preloadVideo = nextAnimePreloadRef.current;
+    if (!preloadVideo) return;
 
     if (!nextAnimeVideoSource) {
-      existing?.remove();
-      const preloadVideo = nextAnimePreloadRef.current;
-      if (preloadVideo) {
-        preloadVideo.pause();
-        preloadVideo.removeAttribute("src");
-      }
+      preloadVideo.pause();
+      preloadVideo.removeAttribute("src");
       return;
     }
 
-    const link = existing ?? document.createElement("link");
-    link.setAttribute("data-kwizik-next-anime-preload", "true");
-    link.setAttribute("rel", "preload");
-    link.setAttribute("as", "video");
-    link.setAttribute("href", nextAnimeVideoSource);
-    if (!existing) {
-      head.appendChild(link);
-    }
-
-    const preloadVideo = nextAnimePreloadRef.current;
-    if (preloadVideo && preloadVideo.getAttribute("src") !== nextAnimeVideoSource) {
+    if (preloadVideo.getAttribute("src") !== nextAnimeVideoSource) {
       preloadVideo.setAttribute("src", nextAnimeVideoSource);
       preloadVideo.load();
     }
   }, [nextAnimeVideoSource]);
 
   useEffect(() => {
+    if (!session.playerId) return;
+    if (state?.state !== "loading") return;
+    if (!state.media || state.media.provider !== "animethemes") return;
+    if (!usingAnimeVideoPlayback) return;
+    if (animePlaybackStatus === "playing") return;
+
+    const trackId = state.media.trackId;
+    const round = state.round;
+    const timeoutId = window.setTimeout(() => {
+      const reportKey = `timeout:${round}:${trackId}`;
+      if (reportedUnavailableMediaRef.current === reportKey) return;
+      if (mediaUnavailableMutation.isPending) return;
+      reportedUnavailableMediaRef.current = reportKey;
+      setAudioError(true);
+      mediaUnavailableMutation.mutate(trackId);
+    }, ANIME_LOADING_STALL_REPORT_MS);
+
     return () => {
-      const link = document.head.querySelector(
-        "link[data-kwizik-next-anime-preload='true']",
-      );
-      link?.remove();
+      window.clearTimeout(timeoutId);
     };
-  }, []);
+  }, [
+    animePlaybackStatus,
+    mediaUnavailableMutation.isPending,
+    mediaUnavailableMutation.mutate,
+    session.playerId,
+    state?.media?.provider,
+    state?.media?.trackId,
+    state?.round,
+    state?.state,
+    usingAnimeVideoPlayback,
+  ]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -1511,6 +1531,7 @@ export function RoomPlayPage() {
                     preload="auto"
                     playsInline
                     onLoadedMetadata={handleAnimeLoadedMetadata}
+                    onCanPlay={handleAnimeCanPlay}
                     onCanPlayThrough={handleAnimeCanPlayThrough}
                     onPlaying={handleAnimePlaying}
                     onError={handleAnimeMediaUnavailable}

@@ -2479,10 +2479,22 @@ export class RoomStore {
     const revealTrack = session.latestReveal;
     const activeTrack = state === "playing" || state === "loading" ? playingTrack : revealTrack;
     if (!activeTrack || activeTrack.provider !== "animethemes") {
-      return { status: "invalid_payload" as const };
+      return {
+        status: "ok" as const,
+        accepted: false,
+        state: session.manager.state(),
+        round: session.manager.round(),
+        deadlineMs: session.manager.deadlineMs(),
+      };
     }
     if (activeTrack.id !== trackId) {
-      return { status: "invalid_payload" as const };
+      return {
+        status: "ok" as const,
+        accepted: false,
+        state: session.manager.state(),
+        round: session.manager.round(),
+        deadlineMs: session.manager.deadlineMs(),
+      };
     }
 
     await this.markAnimeThemeVideoUnavailable(trackId);
@@ -2520,7 +2532,13 @@ export class RoomStore {
     const currentRound = session.manager.round();
     const activeTrack = currentRound > 0 ? session.trackPool[currentRound - 1] ?? null : null;
     if (!activeTrack || activeTrack.provider !== "animethemes" || activeTrack.id !== trackId) {
-      return { status: "invalid_payload" as const };
+      return {
+        status: "ok" as const,
+        accepted: false,
+        state: session.manager.state(),
+        round: session.manager.round(),
+        deadlineMs: session.manager.deadlineMs(),
+      };
     }
 
     const marked = session.manager.markMediaReady(playerId, nowMs);

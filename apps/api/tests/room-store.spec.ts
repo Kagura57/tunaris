@@ -753,7 +753,7 @@ describe("RoomStore gameplay progression", () => {
     expect(store.roomState(roomCode)?.state).toBe("results");
   });
 
-  it("rejects animethemes unavailable reports for a non-active track", async () => {
+  it("ignores animethemes unavailable reports for a non-active track", async () => {
     const store = new RoomStore({
       config: {
         playingMs: 100,
@@ -795,7 +795,11 @@ describe("RoomStore gameplay progression", () => {
     session.manager.forcePlayingRound(1, Date.now() + 100, Date.now());
 
     const reported = await store.reportMediaUnavailable(roomCode, host.value.playerId, "other-track");
-    expect(reported.status).toBe("invalid_payload");
+    expect(reported.status).toBe("ok");
+    if (reported.status === "ok") {
+      expect(reported.accepted).toBe(false);
+      expect(reported.state).toBe("playing");
+    }
   });
 
   it("auto-validates latest draft answer when text round ends", async () => {
