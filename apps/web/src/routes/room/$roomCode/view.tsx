@@ -495,7 +495,7 @@ export function RoomViewPage() {
             />
           )}
           <div className="media-wave-layer" aria-hidden="true">
-            <div className="wave-bars">
+            <div className={`wave-bars${usingAnimeVideoPlayback ? " wave-bars-fallback" : ""}`}>
               {WAVE_BARS.map((bar) => (
                 <span
                   key={bar.key}

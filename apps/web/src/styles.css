@@ -1316,6 +1316,11 @@ select option {
   animation: pulse-bar 1.15s ease-in-out infinite alternate;
 }
 
+.wave-bars-fallback span {
+  opacity: 0.82;
+  animation-duration: 1.35s;
+}
+
 @keyframes pulse-bar {
   0% {
     transform: scaleY(0.35);

@@ -1624,7 +1624,6 @@ export function RoomPlayPage() {
                     key={stableAnimeVideoPlayback?.key ?? "none"}
                     className="media-video-layer anime-video-layer"
                     src={activeAnimeVideoSource}
-                    crossOrigin="anonymous"
                     preload="auto"
                     playsInline
                     onLoadedMetadata={handleAnimeLoadedMetadata}
@@ -1650,7 +1649,7 @@ export function RoomPlayPage() {
                   />
                 )}
                 <div className="media-wave-layer" aria-hidden="true">
-                  <div className="wave-bars">
+                  <div className={`wave-bars${usingAnimeVideoPlayback ? " wave-bars-fallback" : ""}`}>
                     {WAVE_BARS.map((bar) => (
                       <span
                         key={bar.key}
