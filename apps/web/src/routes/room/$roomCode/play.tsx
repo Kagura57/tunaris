@@ -34,6 +34,8 @@ const COUNTDOWN_MS = 3_000;
 const REVEAL_MS = 20_000;
 const LEADERBOARD_MS = 0;
 const ANIME_LOADING_STALL_REPORT_MS = 12_000;
+const MEDIA_READY_RETRY_DELAY_MS = 350;
+const MEDIA_READY_RETRY_MAX_ATTEMPTS = 4;
 
 type SourceMode = "public_playlist" | "players_liked" | "anilist_union";
 type ThemeMode = "op_only" | "ed_only" | "mix";
@@ -256,6 +258,8 @@ export function RoomPlayPage() {
   const progressStateRef = useRef<{ key: string; value: number }>({ key: "", value: 0 });
   const postRoundProgressRef = useRef<{ key: string; startedAtMs: number } | null>(null);
   const audioRetryTimeoutRef = useRef<number | null>(null);
+  const mediaReadyRetryTimeoutRef = useRef<number | null>(null);
+  const mediaReadyRetryRef = useRef<{ key: string; attempts: number } | null>(null);
   const autoSubmitSignatureRef = useRef<string | null>(null);
   const draftSignatureRef = useRef<string | null>(null);
   const reportedUnavailableMediaRef = useRef<string | null>(null);
@@ -266,6 +270,15 @@ export function RoomPlayPage() {
   const roomMissingRedirectedRef = useRef(false);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (mediaReadyRetryTimeoutRef.current !== null) {
+        window.clearTimeout(mediaReadyRetryTimeoutRef.current);
+        mediaReadyRetryTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const id = window.setInterval(() => setClockNow(Date.now() + serverClockOffsetMs), 80);
@@ -750,7 +763,33 @@ export function RoomPlayPage() {
         trackId,
       });
     },
-    onSuccess: () => snapshotQuery.refetch(),
+    onSuccess: (result, trackId) => {
+      if (!result.accepted) {
+        reportedMediaReadyRef.current = null;
+        if (
+          state?.state === "loading" &&
+          state.media?.provider === "animethemes" &&
+          state.media.trackId === trackId
+        ) {
+          const retryKey = `${state.round}:${trackId}`;
+          const previous = mediaReadyRetryRef.current;
+          const attempts = previous?.key === retryKey ? previous.attempts + 1 : 1;
+          mediaReadyRetryRef.current = { key: retryKey, attempts };
+          if (attempts <= MEDIA_READY_RETRY_MAX_ATTEMPTS) {
+            if (mediaReadyRetryTimeoutRef.current !== null) {
+              window.clearTimeout(mediaReadyRetryTimeoutRef.current);
+            }
+            mediaReadyRetryTimeoutRef.current = window.setTimeout(() => {
+              mediaReadyRetryTimeoutRef.current = null;
+              signalAnimeMediaReady();
+            }, MEDIA_READY_RETRY_DELAY_MS);
+          }
+        }
+      } else {
+        mediaReadyRetryRef.current = null;
+      }
+      snapshotQuery.refetch();
+    },
     onError: () => {
       reportedMediaReadyRef.current = null;
     },
@@ -1099,6 +1138,11 @@ export function RoomPlayPage() {
     reportedMediaReadyRef.current = null;
     appliedAnimeStartRef.current = null;
     failedAnimeTrackKeyRef.current = null;
+    mediaReadyRetryRef.current = null;
+    if (mediaReadyRetryTimeoutRef.current !== null) {
+      window.clearTimeout(mediaReadyRetryTimeoutRef.current);
+      mediaReadyRetryTimeoutRef.current = null;
+    }
     if (state?.state === "loading" && state.media?.provider === "animethemes") {
       setAnimePlaybackStatus("buffering");
     } else {
