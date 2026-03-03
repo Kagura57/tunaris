@@ -8,7 +8,8 @@ describe("room play anime mode", () => {
     expect(file).toContain("media-shell");
     expect(file).toContain("anime-video-layer");
     expect(file).toContain("Chargement de la video");
-    expect(file).toContain("kwizik-next-anime-preload");
+    expect(file).toContain("failedAnimeTrackKeyRef");
+    expect(file).toContain("video.removeAttribute(\"src\")");
     expect(file).toContain("anilist_union");
   });
 });
