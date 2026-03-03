@@ -300,7 +300,6 @@ export function RoomViewPage() {
     const video = animeVideoRef.current;
     if (!video) return;
     applyAnimeRandomStart(video);
-    video.play().catch(() => undefined);
   }
 
   function handleAnimePlayable() {
@@ -319,22 +318,25 @@ export function RoomViewPage() {
 
     if (!activeAnimeVideoSource) {
       video.pause();
-      video.removeAttribute("src");
+      appliedAnimeStartRef.current = null;
       return;
     }
 
-    const currentSrc = video.getAttribute("src");
-    if (currentSrc !== activeAnimeVideoSource) {
-      video.setAttribute("src", activeAnimeVideoSource);
-      video.load();
-      appliedAnimeStartRef.current = null;
-    }
+    appliedAnimeStartRef.current = null;
+  }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key]);
 
+  useEffect(() => {
+    const video = animeVideoRef.current;
+    if (!video || !activeAnimeVideoSource) return;
+    if (state?.state === "loading") {
+      video.pause();
+      return;
+    }
     const playPromise = video.play();
     if (playPromise) {
       playPromise.catch(() => undefined);
     }
-  }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key]);
+  }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key, state?.state]);
 
   useEffect(() => {
     const selector = "link[data-kwizik-next-anime-preload='true']";
@@ -423,13 +425,14 @@ export function RoomViewPage() {
     function unlockAudioPlayback() {
       const shouldKickIframe = Boolean(activeYoutubeEmbed) && !userInteractionUnlockedRef.current;
       userInteractionUnlockedRef.current = true;
+      const canAutoPlayAnime = state?.state !== "loading";
 
       const audio = audioRef.current;
       if (audio && audio.src) {
         audio.play().catch(() => undefined);
       }
       const video = animeVideoRef.current;
-      if (video && activeAnimeVideoSource) {
+      if (video && activeAnimeVideoSource && canAutoPlayAnime) {
         video.play().catch(() => undefined);
       }
       if (shouldKickIframe) {
@@ -443,7 +446,7 @@ export function RoomViewPage() {
       window.removeEventListener("pointerdown", unlockAudioPlayback);
       window.removeEventListener("keydown", unlockAudioPlayback);
     };
-  }, [activeAnimeVideoSource, activeYoutubeEmbed]);
+  }, [activeAnimeVideoSource, activeYoutubeEmbed, state?.state]);
 
   useEffect(() => {
     return () => {

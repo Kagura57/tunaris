@@ -6,6 +6,14 @@ function normalizeApiBaseUrl(raw: string) {
   return raw.trim().replace(/\/+$/, "");
 }
 
+function isLocalViteDevOrigin() {
+  if (typeof window === "undefined") return false;
+  const host = window.location.hostname;
+  const port = window.location.port;
+  const isLoopback = host === "localhost" || host === "127.0.0.1";
+  return isLoopback && (port === "5173" || port === "4173");
+}
+
 function apiBaseCandidates() {
   const candidates: string[] = [];
   if (preferredApiBaseUrl) {
@@ -16,7 +24,9 @@ function apiBaseCandidates() {
     candidates.push(ENV_API_BASE_URL);
   } else if (typeof window !== "undefined" && window.location.origin.length > 0) {
     candidates.push(`${window.location.origin}/api`);
-    candidates.push(window.location.origin);
+    if (!isLocalViteDevOrigin()) {
+      candidates.push(window.location.origin);
+    }
   }
 
   candidates.push("http://127.0.0.1:3001");
@@ -258,6 +268,10 @@ function readRetryCount(method: string, retry?: number) {
   return method === "GET" ? 2 : 0;
 }
 
+function readRequestTimeoutMs(method: string) {
+  return method === "GET" ? 9_000 : 4_500;
+}
+
 async function sleep(ms: number) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -292,11 +306,35 @@ async function requestJson<T>(path: string, init?: RequestOptions): Promise<T> {
           headers.set("x-request-id", requestId);
         }
 
-        const response = await fetch(`${base}${pathWithSlash}`, {
-          credentials: "include",
-          ...requestInit,
-          headers,
-        });
+        const timeoutController = new AbortController();
+        const upstreamSignal = requestInit.signal ?? null;
+        let detachAbortListener: (() => void) | null = null;
+        if (upstreamSignal) {
+          if (upstreamSignal.aborted) {
+            timeoutController.abort();
+          } else {
+            const abortFromUpstream = () => timeoutController.abort();
+            upstreamSignal.addEventListener("abort", abortFromUpstream, { once: true });
+            detachAbortListener = () => {
+              upstreamSignal.removeEventListener("abort", abortFromUpstream);
+            };
+          }
+        }
+        const timeoutId = globalThis.setTimeout(() => {
+          timeoutController.abort();
+        }, readRequestTimeoutMs(method));
+        let response: Response;
+        try {
+          response = await fetch(`${base}${pathWithSlash}`, {
+            credentials: "include",
+            ...requestInit,
+            signal: timeoutController.signal,
+            headers,
+          });
+        } finally {
+          globalThis.clearTimeout(timeoutId);
+          detachAbortListener?.();
+        }
 
         const correlatedRequestId = response.headers.get("x-request-id") ?? requestId;
 
@@ -397,7 +435,12 @@ async function requestJson<T>(path: string, init?: RequestOptions): Promise<T> {
           throw error;
         }
 
-        const message = error instanceof Error ? error.message : "HTTP_UNKNOWN";
+        const isAbortError =
+          typeof error === "object" &&
+          error !== null &&
+          "name" in error &&
+          (error as { name?: unknown }).name === "AbortError";
+        const message = isAbortError ? "REQUEST_TIMEOUT" : error instanceof Error ? error.message : "HTTP_UNKNOWN";
         lastError = error instanceof Error ? error : new Error(message);
 
         if (attempt < retries) {

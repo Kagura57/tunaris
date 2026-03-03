@@ -15,6 +15,11 @@ export function hasYouTubePlayback(track: Pick<MusicTrack, "provider" | "sourceU
   return source.includes("youtube.com/watch") || source.includes("youtu.be/");
 }
 
-export function isTrackPlayable(track: Pick<MusicTrack, "provider" | "previewUrl" | "sourceUrl">) {
-  return hasYouTubePlayback(track);
+export function hasAnimeThemesPlayback(track: Pick<MusicTrack, "provider" | "sourceUrl" | "videoUrl">) {
+  if (track.provider !== "animethemes") return false;
+  return hasText(track.sourceUrl) || hasText(track.videoUrl);
+}
+
+export function isTrackPlayable(track: Pick<MusicTrack, "provider" | "previewUrl" | "sourceUrl" | "videoUrl">) {
+  return hasYouTubePlayback(track) || hasAnimeThemesPlayback(track);
 }

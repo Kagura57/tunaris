@@ -11,7 +11,6 @@ import { getRomanizedJapaneseCached, scheduleRomanizeJapanese } from "./Japanese
 import { SPOTIFY_RATE_LIMITED_ERROR, spotifyPlaylistRateLimitRetryAfterMs } from "../routes/music/spotify";
 import { fetchUserLikedTracksForProviders as fetchSyncedUserLikedTracksForProviders } from "./UserMusicLibrary";
 import { pool } from "../db/client";
-import { readEnvVar } from "../lib/env";
 import { userAnimeLibraryRepository } from "../repositories/UserAnimeLibraryRepository";
 import { userLikedTrackRepository } from "../repositories/UserLikedTrackRepository";
 import { normalizeAnimeText } from "./AnimeTextNormalization";
@@ -151,28 +150,6 @@ const PLAYERS_LIKED_POOL_BUILD_TIMEOUT_MS = 45_000;
 const ROOM_ANSWER_SUGGESTION_LIMIT = 1_000;
 const ROOM_BULK_ANSWER_TRACK_LIMIT = 16_000;
 const ROOM_BULK_ANSWER_SUGGESTION_LIMIT = 24_000;
-
-function readApiBaseUrl() {
-  const fromBetterAuth = readEnvVar("BETTER_AUTH_URL")?.trim() ?? "";
-  if (fromBetterAuth.length > 0) {
-    return fromBetterAuth.replace(/\/+$/, "");
-  }
-
-  const fromRailwayDomain = readEnvVar("RAILWAY_PUBLIC_DOMAIN")?.trim() ?? "";
-  if (fromRailwayDomain.length > 0) {
-    const withProtocol =
-      fromRailwayDomain.startsWith("http://") || fromRailwayDomain.startsWith("https://")
-        ? fromRailwayDomain
-        : `https://${fromRailwayDomain}`;
-    return withProtocol.replace(/\/+$/, "");
-  }
-
-  return "http://127.0.0.1:3001";
-}
-
-function animethemesProxyUrl(videoKey: string) {
-  return `${readApiBaseUrl()}/quiz/media/animethemes/${encodeURIComponent(videoKey)}`;
-}
 
 type RoundConfig = typeof DEFAULT_ROUND_CONFIG;
 
@@ -1042,9 +1019,9 @@ export class RoomStore {
             tv.updated_at desc,
             tv.is_creditless desc,
             case
-              when coalesce(tv.resolution, 0) = 1080 then 0
-              when coalesce(tv.resolution, 0) > 1080 then 1
-              when coalesce(tv.resolution, 0) = 720 then 2
+              when coalesce(tv.resolution, 0) = 720 then 0
+              when coalesce(tv.resolution, 0) = 1080 then 1
+              when coalesce(tv.resolution, 0) > 1080 then 2
               when coalesce(tv.resolution, 0) = 480 then 3
               when coalesce(tv.resolution, 0) > 0 then 4
               else 5
@@ -1069,7 +1046,7 @@ export class RoomStore {
             .filter((value) => value.length > 0),
         ),
       );
-      const proxyUrl = animethemesProxyUrl(row.video_key);
+      const sourceUrl = row.webm_url;
       return {
         provider: "animethemes",
         id: row.video_key,
@@ -1077,10 +1054,10 @@ export class RoomStore {
         artist: themeLabel.length > 0 ? themeLabel : row.theme_type,
         songTitle: row.song_title,
         songArtists: row.song_artists ?? [],
-        previewUrl: proxyUrl,
-        sourceUrl: proxyUrl,
-        audioUrl: proxyUrl,
-        videoUrl: proxyUrl,
+        previewUrl: sourceUrl,
+        sourceUrl,
+        audioUrl: sourceUrl,
+        videoUrl: row.webm_url,
         answer: {
           canonical: row.title_romaji,
           englishTitle: row.title_english,
@@ -1089,14 +1066,15 @@ export class RoomStore {
       } satisfies MusicTrack;
     });
 
-    const split = this.splitAnswerAndDistractorPools(tracks, safeRounds);
+    const candidateTracks = tracks.filter((track) => isTrackPlayable(track));
+    const split = this.splitAnswerAndDistractorPools(candidateTracks, safeRounds);
     return {
       tracks: split.tracks,
       distractorTracks: split.distractorTracks,
       candidateCount: split.candidateCount,
       rawTotal: selected.rows.length,
-      playableTotal: tracks.length,
-      cleanTotal: tracks.length,
+      playableTotal: candidateTracks.length,
+      cleanTotal: candidateTracks.length,
     };
   }
 
@@ -1398,7 +1376,6 @@ export class RoomStore {
     const activeTrack = this.trackForRound(session, currentRound);
     if (!activeTrack || activeTrack.provider !== "animethemes") return false;
 
-    void this.markAnimeThemeVideoUnavailable(activeTrack.id);
     logEvent("warn", "room_loading_timeout_skip_round", {
       roomCode: session.roomCode,
       round: currentRound,
@@ -1454,27 +1431,6 @@ export class RoomStore {
       return true;
     }
     return false;
-  }
-
-  private async markAnimeThemeVideoUnavailable(videoKey: string) {
-    if (!(typeof process.env.DATABASE_URL === "string" && process.env.DATABASE_URL.trim().length > 0)) {
-      return;
-    }
-    try {
-      await pool.query(
-        `
-          update anime_theme_videos
-          set is_playable = false, updated_at = now()
-          where video_key = $1
-        `,
-        [videoKey],
-      );
-    } catch (error) {
-      logEvent("warn", "animethemes_mark_unavailable_failed", {
-        videoKey,
-        error: error instanceof Error ? error.message : "UNKNOWN_ERROR",
-      });
-    }
   }
 
   private progressSession(session: RoomSession, nowMs: number) {
@@ -2521,7 +2477,8 @@ export class RoomStore {
       };
     }
 
-    await this.markAnimeThemeVideoUnavailable(trackId);
+    // Runtime delivery failures can be transient (upstream rate-limit/challenge/network),
+    // so do not permanently blacklist the catalog entry from a single room report.
 
     if (state === "loading" || state === "playing") {
       session.manager.skipPlayingRound({

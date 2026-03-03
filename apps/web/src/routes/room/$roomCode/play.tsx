@@ -33,7 +33,8 @@ const ROUND_MS = 20_000;
 const COUNTDOWN_MS = 3_000;
 const REVEAL_MS = 20_000;
 const LEADERBOARD_MS = 0;
-const ANIME_LOADING_STALL_REPORT_MS = 12_000;
+const ANIME_LOADING_STALL_REPORT_MS = 15_000;
+const ANIME_MEDIA_ERROR_THRESHOLD = 3;
 const MEDIA_READY_RETRY_DELAY_MS = 350;
 const MEDIA_READY_RETRY_MAX_ATTEMPTS = 4;
 
@@ -225,7 +226,7 @@ export function RoomPlayPage() {
   const [progress, setProgress] = useState(0);
   const [audioError, setAudioError] = useState(false);
   const [iframeEpoch, setIframeEpoch] = useState(0);
-  const [animePlaybackStatus, setAnimePlaybackStatus] = useState<"idle" | "buffering" | "playing">("idle");
+  const [animePlaybackStatus, setAnimePlaybackStatus] = useState<"idle" | "buffering" | "ready" | "playing">("idle");
   const [stableYoutubePlayback, setStableYoutubePlayback] = useState<{
     key: string;
     embedUrl: string;
@@ -240,6 +241,7 @@ export function RoomPlayPage() {
   const [sourceMode, setSourceMode] = useState<SourceMode>("anilist_union");
   const [themeMode, setThemeMode] = useState<ThemeMode>("mix");
   const titlePreference = account.titlePreference;
+  const [debouncedAnswer, setDebouncedAnswer] = useState("");
   const [playlistQuery, setPlaylistQuery] = useState("top hits");
   const [debouncedPlaylistQuery, setDebouncedPlaylistQuery] = useState("top hits");
   const [playlistOffset, setPlaylistOffset] = useState(0);
@@ -266,6 +268,7 @@ export function RoomPlayPage() {
   const reportedMediaReadyRef = useRef<string | null>(null);
   const appliedAnimeStartRef = useRef<string | null>(null);
   const failedAnimeTrackKeyRef = useRef<string | null>(null);
+  const animeMediaErrorRef = useRef<{ key: string; count: number } | null>(null);
   const userInteractionUnlockedRef = useRef(false);
   const roomMissingRedirectedRef = useRef(false);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
@@ -351,6 +354,13 @@ export function RoomPlayPage() {
   }, [playlistQuery]);
 
   useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedAnswer(typedAnswer);
+    }, 300);
+    return () => window.clearTimeout(timeoutId);
+  }, [typedAnswer]);
+
+  useEffect(() => {
     setPlaylistOffset(0);
   }, [normalizedPlaylistQuery, sourceMode, roomCode]);
 
@@ -395,9 +405,9 @@ export function RoomPlayPage() {
   });
 
   const animeAutocompleteQuery = useQuery({
-    queryKey: ["anime-autocomplete", typedAnswer],
-    queryFn: () => searchAnimeAutocomplete({ q: typedAnswer, limit: 12 }),
-    enabled: typedAnswer.length >= 1 && state?.state === "playing" && state.mode === "text",
+    queryKey: ["anime-autocomplete", debouncedAnswer],
+    queryFn: () => searchAnimeAutocomplete({ q: debouncedAnswer, limit: 12 }),
+    enabled: debouncedAnswer.length >= 1 && state?.state === "playing" && state.mode === "text",
     staleTime: 30_000,
     retry: 1,
   });
@@ -1025,8 +1035,19 @@ export function RoomPlayPage() {
     !session.playerId ||
     hasLockedRevealVote;
 
-  function handleAnimeMediaUnavailable() {
+  function handleAnimeMediaUnavailable(input?: { force?: boolean }) {
+    const force = input?.force === true;
     setAudioError(true);
+    if (!force && state?.media?.provider === "animethemes") {
+      const errorKey = `${state.round}:${state.media.trackId}`;
+      const previous = animeMediaErrorRef.current;
+      const count = previous?.key === errorKey ? previous.count + 1 : 1;
+      animeMediaErrorRef.current = { key: errorKey, count };
+      if (count < ANIME_MEDIA_ERROR_THRESHOLD) {
+        setAnimePlaybackStatus("buffering");
+        return;
+      }
+    }
     const video = animeVideoRef.current;
     if (video) {
       video.pause();
@@ -1089,22 +1110,22 @@ export function RoomPlayPage() {
     if (!video) return;
     setAnimePlaybackStatus("buffering");
     applyAnimeRandomStart(video);
+  }
+
+  function handleAnimeLoadedData() {
+    const video = animeVideoRef.current;
+    if (video) {
+      applyAnimeRandomStart(video);
+      setAnimePlaybackStatus("ready");
+    }
     signalAnimeMediaReady();
-    video.play().catch(() => undefined);
   }
 
   function handleAnimeCanPlay() {
     const video = animeVideoRef.current;
     if (video) {
       applyAnimeRandomStart(video);
-    }
-    signalAnimeMediaReady();
-  }
-
-  function handleAnimeCanPlayThrough() {
-    const video = animeVideoRef.current;
-    if (video) {
-      applyAnimeRandomStart(video);
+      setAnimePlaybackStatus("ready");
     }
     signalAnimeMediaReady();
   }
@@ -1115,7 +1136,10 @@ export function RoomPlayPage() {
       applyAnimeRandomStart(video);
     }
     setAnimePlaybackStatus("playing");
-    signalAnimeMediaReady();
+  }
+
+  function handleAnimeWaiting() {
+    setAnimePlaybackStatus("buffering");
   }
 
   useEffect(() => {
@@ -1138,6 +1162,7 @@ export function RoomPlayPage() {
     reportedMediaReadyRef.current = null;
     appliedAnimeStartRef.current = null;
     failedAnimeTrackKeyRef.current = null;
+    animeMediaErrorRef.current = null;
     mediaReadyRetryRef.current = null;
     if (mediaReadyRetryTimeoutRef.current !== null) {
       window.clearTimeout(mediaReadyRetryTimeoutRef.current);
@@ -1203,30 +1228,39 @@ export function RoomPlayPage() {
 
     if (!activeAnimeVideoSource) {
       video.pause();
-      video.removeAttribute("src");
+      appliedAnimeStartRef.current = null;
+      reportedMediaReadyRef.current = null;
+      setAnimePlaybackStatus("idle");
       return;
     }
 
-    const currentSrc = video.getAttribute("src");
-    if (currentSrc !== activeAnimeVideoSource) {
-      video.setAttribute("src", activeAnimeVideoSource);
-      video.load();
-      appliedAnimeStartRef.current = null;
-      reportedMediaReadyRef.current = null;
-    }
+    appliedAnimeStartRef.current = null;
+    reportedMediaReadyRef.current = null;
+    setAnimePlaybackStatus("buffering");
+  }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key]);
 
+  useEffect(() => {
+    const video = animeVideoRef.current;
+    if (!video || !activeAnimeVideoSource) return;
+    if (state?.state === "loading") {
+      video.pause();
+      return;
+    }
     const playPromise = video.play();
     if (playPromise) {
-      playPromise.catch(() => undefined);
+      playPromise.catch((error) => {
+        console.error("anime_video_play_failed", error);
+        handleAnimeMediaUnavailable({ force: true });
+      });
     }
-  }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key]);
+  }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key, state?.state]);
 
   useEffect(() => {
     if (!session.playerId) return;
     if (state?.state !== "loading") return;
     if (!state.media || state.media.provider !== "animethemes") return;
     if (!usingAnimeVideoPlayback) return;
-    if (animePlaybackStatus === "playing") return;
+    if (animePlaybackStatus === "ready" || animePlaybackStatus === "playing") return;
 
     const trackId = state.media.trackId;
     const round = state.round;
@@ -1301,13 +1335,14 @@ export function RoomPlayPage() {
     function unlockAudioPlayback() {
       const shouldKickIframe = Boolean(activeYoutubeEmbed) && !userInteractionUnlockedRef.current;
       userInteractionUnlockedRef.current = true;
+      const canAutoPlayAnime = state?.state !== "loading";
 
       const audio = audioRef.current;
       if (audio && audio.src) {
         audio.play().catch(() => undefined);
       }
       const video = animeVideoRef.current;
-      if (video && activeAnimeVideoSource) {
+      if (video && activeAnimeVideoSource && canAutoPlayAnime) {
         video.play().catch(() => undefined);
       }
       if (shouldKickIframe) {
@@ -1322,7 +1357,7 @@ export function RoomPlayPage() {
       window.removeEventListener("pointerdown", unlockAudioPlayback);
       window.removeEventListener("keydown", unlockAudioPlayback);
     };
-  }, [activeAnimeVideoSource, activeYoutubeEmbed]);
+  }, [activeAnimeVideoSource, activeYoutubeEmbed, state?.state]);
 
   useEffect(() => {
     return () => {
@@ -1589,12 +1624,15 @@ export function RoomPlayPage() {
                     key={stableAnimeVideoPlayback?.key ?? "none"}
                     className="media-video-layer anime-video-layer"
                     src={activeAnimeVideoSource}
+                    crossOrigin="anonymous"
                     preload="auto"
                     playsInline
                     onLoadedMetadata={handleAnimeLoadedMetadata}
+                    onLoadedData={handleAnimeLoadedData}
                     onCanPlay={handleAnimeCanPlay}
-                    onCanPlayThrough={handleAnimeCanPlayThrough}
                     onPlaying={handleAnimePlaying}
+                    onWaiting={handleAnimeWaiting}
+                    onStalled={handleAnimeWaiting}
                     onError={handleAnimeMediaUnavailable}
                   />
                 )}

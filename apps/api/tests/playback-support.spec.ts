@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasYouTubePlayback, isTrackPlayable } from "../src/services/PlaybackSupport";
+import { hasAnimeThemesPlayback, hasYouTubePlayback, isTrackPlayable } from "../src/services/PlaybackSupport";
 
 describe("playback support", () => {
   it("accepts youtube provider as playable", () => {
@@ -26,5 +26,14 @@ describe("playback support", () => {
       sourceUrl: "https://www.deezer.com/track/123",
     });
     expect(playable).toBe(false);
+  });
+
+  it("accepts animethemes provider as playable", () => {
+    const playable = hasAnimeThemesPlayback({
+      provider: "animethemes",
+      sourceUrl: "https://v.animethemes.moe/theme-1.webm",
+      videoUrl: "https://v.animethemes.moe/theme-1.webm",
+    });
+    expect(playable).toBe(true);
   });
 });

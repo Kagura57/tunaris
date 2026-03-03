@@ -666,6 +666,13 @@ async function resolveYouTubePlayback(track: MusicTrack): Promise<YouTubePlaybac
       durationSec: track.durationSec ?? durationMsToSec(persisted.durationMs),
       previewUrl: null,
       sourceUrl: `https://www.youtube.com/watch?v=${persisted.youtubeVideoId}`,
+      ...(typeof track.songTitle === "string" && track.songTitle.trim().length > 0
+        ? { songTitle: track.songTitle }
+        : {}),
+      ...(Array.isArray(track.songArtists) && track.songArtists.length > 0
+        ? { songArtists: track.songArtists }
+        : {}),
+      ...(track.answer ? { answer: track.answer } : {}),
     } satisfies MusicTrack;
     youtubeTrackCache.set(key, {
       track: cachedResolved,
@@ -734,6 +741,13 @@ async function resolveYouTubePlayback(track: MusicTrack): Promise<YouTubePlaybac
       durationSec: best.track.durationSec ?? track.durationSec ?? null,
       previewUrl: null,
       sourceUrl: best.track.sourceUrl ?? `https://www.youtube.com/watch?v=${best.track.id}`,
+      ...(typeof track.songTitle === "string" && track.songTitle.trim().length > 0
+        ? { songTitle: track.songTitle }
+        : {}),
+      ...(Array.isArray(track.songArtists) && track.songArtists.length > 0
+        ? { songArtists: track.songArtists }
+        : {}),
+      ...(track.answer ? { answer: track.answer } : {}),
     } satisfies MusicTrack;
 
     try {
