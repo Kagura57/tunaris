@@ -3,6 +3,7 @@ import {
   buildAnimeAcronym,
   collectAniListAliasCandidates,
   normalizeAniListListStatus,
+  parseAnimeCatalogId,
 } from "../src/services/jobs/anilist-sync-worker";
 
 describe("anilist sync worker", () => {
@@ -37,5 +38,12 @@ describe("anilist sync worker", () => {
       "AOT",
       "SnK",
     ]);
+  });
+
+  it("parses anime catalog ids from bigint-like query values", () => {
+    expect(parseAnimeCatalogId("42")).toBe(42);
+    expect(parseAnimeCatalogId(1337)).toBe(1337);
+    expect(parseAnimeCatalogId("0")).toBeNull();
+    expect(parseAnimeCatalogId("not-a-number")).toBeNull();
   });
 });

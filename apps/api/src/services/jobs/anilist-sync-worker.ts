@@ -68,6 +68,20 @@ function normalizeAnimeAlias(value: string) {
     .trim();
 }
 
+export function parseAnimeCatalogId(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const rounded = Math.floor(value);
+    return rounded > 0 ? rounded : null;
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
 export function buildAnimeAcronym(value: string) {
   const normalized = normalizeAnimeAlias(value);
   if (normalized.length <= 0) return "";
@@ -172,7 +186,7 @@ async function mapTitlesToAnimeIds(normalizedTitles: string[]) {
   if (normalizedTitles.length <= 0) return new Map<string, number>();
   const result = await pool.query<{
     normalized_alias: string;
-    anime_id: number;
+    anime_id: number | string;
   }>(
     `
       select normalized_alias, anime_id
@@ -184,9 +198,10 @@ async function mapTitlesToAnimeIds(normalizedTitles: string[]) {
 
   const mapped = new Map<string, number>();
   for (const row of result.rows) {
-    if (!mapped.has(row.normalized_alias)) {
-      mapped.set(row.normalized_alias, row.anime_id);
-    }
+    if (mapped.has(row.normalized_alias)) continue;
+    const animeId = parseAnimeCatalogId(row.anime_id);
+    if (!animeId) continue;
+    mapped.set(row.normalized_alias, animeId);
   }
   return mapped;
 }
