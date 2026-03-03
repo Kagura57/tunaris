@@ -250,7 +250,6 @@ export function RoomPlayPage() {
   const youtubeIframeRef = useRef<HTMLIFrameElement | null>(null);
   const animeVideoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const nextAnimePreloadRef = useRef<HTMLVideoElement | null>(null);
   const lastPreviewRef = useRef<string | null>(null);
   const autoStartRoundRef = useRef<number>(0);
   const leaveSentRef = useRef(false);
@@ -262,6 +261,7 @@ export function RoomPlayPage() {
   const reportedUnavailableMediaRef = useRef<string | null>(null);
   const reportedMediaReadyRef = useRef<string | null>(null);
   const appliedAnimeStartRef = useRef<string | null>(null);
+  const failedAnimeTrackKeyRef = useRef<string | null>(null);
   const userInteractionUnlockedRef = useRef(false);
   const roomMissingRedirectedRef = useRef(false);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
@@ -926,6 +926,10 @@ export function RoomPlayPage() {
 
   useEffect(() => {
     if (animeVideoPlayback) {
+      if (failedAnimeTrackKeyRef.current === animeVideoPlayback.key) {
+        setStableAnimeVideoPlayback(null);
+        return;
+      }
       setStableAnimeVideoPlayback((previous) => {
         if (previous?.key === animeVideoPlayback.key) return previous;
         return animeVideoPlayback;
@@ -944,8 +948,6 @@ export function RoomPlayPage() {
 
   const activeYoutubeEmbed = stableYoutubePlayback?.embedUrl ?? null;
   const activeAnimeVideoSource = stableAnimeVideoPlayback?.sourceUrl ?? null;
-  const nextAnimeVideoSource =
-    state?.nextMedia?.provider === "animethemes" ? (state.nextMedia.sourceUrl ?? null) : null;
   const usingYouTubePlayback = Boolean(activeYoutubeEmbed);
   const usingAnimeVideoPlayback = Boolean(activeAnimeVideoSource);
   const revealVideoActive =
@@ -986,6 +988,16 @@ export function RoomPlayPage() {
 
   function handleAnimeMediaUnavailable() {
     setAudioError(true);
+    const video = animeVideoRef.current;
+    if (video) {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+    }
+    if (state?.media?.provider === "animethemes") {
+      failedAnimeTrackKeyRef.current = `${state.media.provider}:${state.media.trackId}`;
+    }
+    setStableAnimeVideoPlayback(null);
     if (!session.playerId) return;
     if (!state?.media || state.media.provider !== "animethemes") return;
     if (state.state !== "loading" && state.state !== "playing" && state.state !== "reveal" && state.state !== "leaderboard") return;
@@ -1086,6 +1098,7 @@ export function RoomPlayPage() {
     reportedUnavailableMediaRef.current = null;
     reportedMediaReadyRef.current = null;
     appliedAnimeStartRef.current = null;
+    failedAnimeTrackKeyRef.current = null;
     if (state?.state === "loading" && state.media?.provider === "animethemes") {
       setAnimePlaybackStatus("buffering");
     } else {
@@ -1163,22 +1176,6 @@ export function RoomPlayPage() {
       playPromise.catch(() => undefined);
     }
   }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key]);
-
-  useEffect(() => {
-    const preloadVideo = nextAnimePreloadRef.current;
-    if (!preloadVideo) return;
-
-    if (!nextAnimeVideoSource) {
-      preloadVideo.pause();
-      preloadVideo.removeAttribute("src");
-      return;
-    }
-
-    if (preloadVideo.getAttribute("src") !== nextAnimeVideoSource) {
-      preloadVideo.setAttribute("src", nextAnimeVideoSource);
-      preloadVideo.load();
-    }
-  }, [nextAnimeVideoSource]);
 
   useEffect(() => {
     if (!session.playerId) return;
@@ -2009,17 +2006,6 @@ export function RoomPlayPage() {
           </aside>
         )}
       </article>
-
-      <video
-        ref={nextAnimePreloadRef}
-        className="blindtest-preload-video kwizik-next-anime-preload"
-        preload="auto"
-        muted
-        playsInline
-        aria-hidden="true"
-      >
-        <track kind="captions" />
-      </video>
 
       <audio
         ref={audioRef}

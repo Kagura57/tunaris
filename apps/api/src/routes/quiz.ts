@@ -92,6 +92,27 @@ export const quizRoutes = new Elysia({ prefix: "/quiz" })
       upstreamHeaders.set("range", range);
     }
     upstreamHeaders.set("accept", "*/*");
+    const userAgent = request.headers.get("user-agent")?.trim();
+    if (userAgent && userAgent.length > 0) {
+      upstreamHeaders.set("user-agent", userAgent);
+    } else {
+      upstreamHeaders.set(
+        "user-agent",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      );
+    }
+    const referer = request.headers.get("referer")?.trim();
+    if (referer && referer.length > 0) {
+      upstreamHeaders.set("referer", referer);
+    }
+    const origin = request.headers.get("origin")?.trim();
+    if (origin && origin.length > 0) {
+      upstreamHeaders.set("origin", origin);
+    }
+    const acceptLanguage = request.headers.get("accept-language")?.trim();
+    if (acceptLanguage && acceptLanguage.length > 0) {
+      upstreamHeaders.set("accept-language", acceptLanguage);
+    }
 
     let upstream: Response;
     try {
@@ -105,6 +126,9 @@ export const quizRoutes = new Elysia({ prefix: "/quiz" })
     }
 
     if (!upstream.ok && upstream.status !== 206) {
+      if (upstream.status === 503) {
+        set.headers["retry-after"] = "1";
+      }
       set.status = upstream.status;
       return await upstream.text();
     }
