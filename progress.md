@@ -5,7 +5,8 @@ Original prompt: Remplacer les feedbacks transitoires du site par un systeme de 
 - 2026-03-06: Migration des feedbacks transitoires sur `auth.tsx`, `index.tsx`, `join.tsx` et `settings.tsx`.
 - 2026-03-06: Migration des feedbacks room/player sur `apps/web/src/routes/room/$roomCode/play.tsx` et `apps/web/src/routes/room/$roomCode/view.tsx`, avec toasts dedupliques pour les erreurs AnimeThemes et les erreurs de synchronisation.
 - 2026-03-06: Suppression du gros bloc `p.status error` legacy dans l'ecran de jeu et du bandeau projection audio legacy.
-- 2026-03-06: AnimeThemes durci pour les stalls longs: auto-skip repousse a un timeout extreme partage avec l'API, et prechargement du `nextMedia` ajoute aussi sur la page joueur pour reduire le buffering entre manches.
+- 2026-03-06: AnimeThemes durci pour les stalls longs: auto-skip repousse a un timeout extreme partage avec l'API et une relance unique du lecteur est tentee avant abandon.
+- 2026-03-06: Suppression du prechargement client du `nextMedia` AnimeThemes sur les pages joueur et projection. Sans cache proxy partage, ce prebuffer dupliquait les requetes `Range` et pouvait empirer le buffering en prod.
 - 2026-03-06: Tests verifies:
   - `bun test apps/web/src/lib/notify.spec.ts apps/web/src/routes`
   - `bun run build` dans `apps/web`

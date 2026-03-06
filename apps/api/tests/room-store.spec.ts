@@ -694,6 +694,10 @@ describe("RoomStore gameplay progression", () => {
     expect(stillLoading?.state).toBe("loading");
 
     nowMs = 90_100;
+    const stillLoadingAfterSoftRetryWindow = store.roomState(created.roomCode);
+    expect(stillLoadingAfterSoftRetryWindow?.state).toBe("loading");
+
+    nowMs = 180_100;
     const skipped = store.roomState(created.roomCode);
     expect(skipped?.state).toBe("results");
   });

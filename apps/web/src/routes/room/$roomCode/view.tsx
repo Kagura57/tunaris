@@ -141,7 +141,6 @@ export function RoomViewPage() {
     sourceUrl: string;
   } | null>(null);
   const animeVideoRef = useRef<HTMLVideoElement | null>(null);
-  const nextAnimePreloadRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lastPreviewRef = useRef<string | null>(null);
   const progressStateRef = useRef<{ key: string; value: number }>({ key: "", value: 0 });
@@ -297,8 +296,6 @@ export function RoomViewPage() {
 
   const activeYoutubeEmbed = stableYoutubePlayback?.embedUrl ?? null;
   const activeAnimeVideoSource = stableAnimeVideoPlayback?.sourceUrl ?? null;
-  const nextAnimeVideoSource =
-    state?.nextMedia?.provider === "animethemes" ? (state.nextMedia.sourceUrl ?? null) : null;
   const usingYouTubePlayback = Boolean(activeYoutubeEmbed);
   const usingAnimeVideoPlayback = Boolean(activeAnimeVideoSource);
   const revealVideoActive =
@@ -388,44 +385,6 @@ export function RoomViewPage() {
       playPromise.catch(() => undefined);
     }
   }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key, state?.state]);
-
-  useEffect(() => {
-    const selector = "link[data-kwizik-next-anime-preload='true']";
-    const head = document.head;
-    const existing = head.querySelector(selector) as HTMLLinkElement | null;
-
-    if (!nextAnimeVideoSource) {
-      existing?.remove();
-      const preloadVideo = nextAnimePreloadRef.current;
-      if (preloadVideo) {
-        preloadVideo.pause();
-        preloadVideo.removeAttribute("src");
-      }
-      return;
-    }
-
-    const link = existing ?? document.createElement("link");
-    link.setAttribute("data-kwizik-next-anime-preload", "true");
-    link.setAttribute("rel", "preload");
-    link.setAttribute("as", "video");
-    link.setAttribute("href", nextAnimeVideoSource);
-    if (!existing) {
-      head.appendChild(link);
-    }
-
-    const preloadVideo = nextAnimePreloadRef.current;
-    if (preloadVideo && preloadVideo.getAttribute("src") !== nextAnimeVideoSource) {
-      preloadVideo.setAttribute("src", nextAnimeVideoSource);
-      preloadVideo.load();
-    }
-  }, [nextAnimeVideoSource]);
-
-  useEffect(() => {
-    return () => {
-      const link = document.head.querySelector("link[data-kwizik-next-anime-preload='true']");
-      link?.remove();
-    };
-  }, []);
 
   useEffect(() => {
     const activeProvider = state?.media?.provider ?? state?.reveal?.provider ?? null;
@@ -684,17 +643,6 @@ export function RoomViewPage() {
           ))}
         </ol>
       </article>
-
-      <video
-        ref={nextAnimePreloadRef}
-        className="blindtest-preload-video"
-        preload="auto"
-        muted
-        playsInline
-        aria-hidden="true"
-      >
-        <track kind="captions" />
-      </video>
 
       <audio
         ref={audioRef}

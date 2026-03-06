@@ -35,7 +35,8 @@ const COUNTDOWN_MS = 3_000;
 const REVEAL_MS = 20_000;
 const LEADERBOARD_MS = 0;
 const ANIME_MEDIA_LONG_LOAD_TOAST_MS = 20_000;
-const ANIME_MEDIA_EXTREME_TIMEOUT_MS = 90_000;
+const ANIME_MEDIA_SOFT_RETRY_TIMEOUT_MS = 90_000;
+const ANIME_MEDIA_EXTREME_TIMEOUT_MS = 180_000;
 const MEDIA_READY_RETRY_DELAY_MS = 350;
 const MEDIA_READY_RETRY_MAX_ATTEMPTS = 4;
 
@@ -442,7 +443,6 @@ export function RoomPlayPage() {
   } | null>(null);
   const youtubeIframeRef = useRef<HTMLIFrameElement | null>(null);
   const animeVideoRef = useRef<HTMLVideoElement | null>(null);
-  const nextAnimePreloadRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lastPreviewRef = useRef<string | null>(null);
   const autoStartRoundRef = useRef<number>(0);
@@ -460,6 +460,7 @@ export function RoomPlayPage() {
   const failedAnimeTrackKeyRef = useRef<string | null>(null);
   const animeLongLoadToastRef = useRef<string | null>(null);
   const animeLastProgressAtRef = useRef<number | null>(null);
+  const animeReloadAttemptRef = useRef<{ key: string; count: number } | null>(null);
   const userInteractionUnlockedRef = useRef(false);
   const roomMissingRedirectedRef = useRef(false);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
@@ -1304,13 +1305,8 @@ export function RoomPlayPage() {
 
   const activeYoutubeEmbed = stableYoutubePlayback?.embedUrl ?? null;
   const activeAnimeVideoSource = stableAnimeVideoPlayback?.sourceUrl ?? null;
-  const nextAnimeVideoSource =
-    state?.nextMedia?.provider === "animethemes" ? (state.nextMedia.sourceUrl ?? null) : null;
   const usingYouTubePlayback = Boolean(activeYoutubeEmbed);
   const usingAnimeVideoPlayback = Boolean(activeAnimeVideoSource);
-  const canPreloadNextAnime =
-    Boolean(nextAnimeVideoSource) &&
-    (animePlaybackStatus === "ready" || animePlaybackStatus === "playing");
   const revealVideoActive =
     (usingYouTubePlayback || usingAnimeVideoPlayback) &&
     state?.state !== "waiting" &&
@@ -1390,6 +1386,36 @@ export function RoomPlayPage() {
   function handleAnimePlaybackIssue() {
     setAudioError(true);
     setAnimePlaybackStatus("buffering");
+  }
+
+  function retryAnimeMediaLoad(trackKey: string) {
+    const video = animeVideoRef.current;
+    if (!video || !activeAnimeVideoSource) return false;
+
+    const previousAttempt =
+      animeReloadAttemptRef.current?.key === trackKey ? animeReloadAttemptRef.current.count : 0;
+    if (previousAttempt >= 1) return false;
+
+    animeReloadAttemptRef.current = {
+      key: trackKey,
+      count: previousAttempt + 1,
+    };
+    reportedMediaReadyRef.current = null;
+    appliedAnimeStartRef.current = null;
+    setAudioError(false);
+    setAnimePlaybackStatus("buffering");
+
+    try {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+      video.src = activeAnimeVideoSource;
+      video.load();
+    } catch {
+      video.load();
+    }
+
+    return true;
   }
 
   function applyAnimeRandomStart(video: HTMLVideoElement) {
@@ -1489,6 +1515,7 @@ export function RoomPlayPage() {
     appliedAnimeStartRef.current = null;
     failedAnimeTrackKeyRef.current = null;
     animeLongLoadToastRef.current = null;
+    animeReloadAttemptRef.current = null;
     mediaReadyRetryRef.current = null;
     setAudioError(false);
     if (mediaReadyRetryTimeoutRef.current !== null) {
@@ -1638,6 +1665,8 @@ export function RoomPlayPage() {
     const intervalId = window.setInterval(() => {
       const lastProgressAtMs = animeLastProgressAtRef.current ?? Date.now();
       const stalledForMs = Math.max(0, Date.now() - lastProgressAtMs);
+      const retryCount =
+        animeReloadAttemptRef.current?.key === trackKey ? animeReloadAttemptRef.current.count : 0;
       if (
         stalledForMs >= ANIME_MEDIA_LONG_LOAD_TOAST_MS &&
         animeLongLoadToastRef.current !== trackKey
@@ -1646,6 +1675,15 @@ export function RoomPlayPage() {
         notify.info("Chargement du theme plus long que prevu...", {
           key: `room-play:anime-long-load:${roomCode}:${trackKey}`,
         });
+      }
+      if (stalledForMs >= ANIME_MEDIA_SOFT_RETRY_TIMEOUT_MS && retryCount < 1) {
+        const didRetry = retryAnimeMediaLoad(trackKey);
+        if (didRetry) {
+          notify.info("Chargement du theme toujours en cours, nouvelle tentative...", {
+            key: `room-play:anime-retry:${roomCode}:${trackKey}`,
+          });
+        }
+        return;
       }
       if (stalledForMs >= ANIME_MEDIA_EXTREME_TIMEOUT_MS) {
         handleAnimeMediaUnavailable({ force: true });
@@ -1663,44 +1701,6 @@ export function RoomPlayPage() {
     state?.state,
     usingAnimeVideoPlayback,
   ]);
-
-  useEffect(() => {
-    const selector = "link[data-kwizik-next-anime-preload='true']";
-    const head = document.head;
-    const existing = head.querySelector(selector) as HTMLLinkElement | null;
-
-    if (!canPreloadNextAnime || !nextAnimeVideoSource) {
-      existing?.remove();
-      const preloadVideo = nextAnimePreloadRef.current;
-      if (preloadVideo) {
-        preloadVideo.pause();
-        preloadVideo.removeAttribute("src");
-      }
-      return;
-    }
-
-    const link = existing ?? document.createElement("link");
-    link.setAttribute("data-kwizik-next-anime-preload", "true");
-    link.setAttribute("rel", "preload");
-    link.setAttribute("as", "video");
-    link.setAttribute("href", nextAnimeVideoSource);
-    if (!existing) {
-      head.appendChild(link);
-    }
-
-    const preloadVideo = nextAnimePreloadRef.current;
-    if (preloadVideo && preloadVideo.getAttribute("src") !== nextAnimeVideoSource) {
-      preloadVideo.setAttribute("src", nextAnimeVideoSource);
-      preloadVideo.load();
-    }
-  }, [canPreloadNextAnime, nextAnimeVideoSource]);
-
-  useEffect(() => {
-    return () => {
-      const link = document.head.querySelector("link[data-kwizik-next-anime-preload='true']");
-      link?.remove();
-    };
-  }, []);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -2471,17 +2471,6 @@ export function RoomPlayPage() {
           </aside>
         )}
       </article>
-
-      <video
-        ref={nextAnimePreloadRef}
-        className="blindtest-preload-video"
-        preload="auto"
-        muted
-        playsInline
-        aria-hidden="true"
-      >
-        <track kind="captions" />
-      </video>
 
       <audio
         ref={audioRef}
