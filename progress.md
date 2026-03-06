@@ -7,10 +7,20 @@ Original prompt: Remplacer les feedbacks transitoires du site par un systeme de 
 - 2026-03-06: Suppression du gros bloc `p.status error` legacy dans l'ecran de jeu et du bandeau projection audio legacy.
 - 2026-03-06: AnimeThemes durci pour les stalls longs: auto-skip repousse a un timeout extreme partage avec l'API et une relance unique du lecteur est tentee avant abandon.
 - 2026-03-06: Suppression du prechargement client du `nextMedia` AnimeThemes sur les pages joueur et projection. Sans cache proxy partage, ce prebuffer dupliquait les requetes `Range` et pouvait empirer le buffering en prod.
+- 2026-03-06: Le signal `media/ready` AnimeThemes cote joueur attend maintenant un buffer reel devant la tete de lecture, au lieu de partir sur un simple `loadeddata`/`canplay`, pour eviter les departs desynchronises entre joueurs.
+- 2026-03-06: Debut du redesign de synchro multijoueur avec `roundSync` serveur, quorum `client_prepared`, `plannedStartAtMs` partage et canal realtime websocket pour pousser les snapshots de room.
+- 2026-03-06: Les pages joueur et projection utilisent maintenant une phase locale effective basee sur `plannedStartAtMs`, avec recalage de lecture media sur la timeline serveur et un seuil `prepared` AnimeThemes reduit pour eviter les attentes inutiles entre manches.
+- 2026-03-06: Le serveur publie aussi un `mediaOffsetSec` autoritaire pour les rounds AnimeThemes/YouTube, afin que tous les clients partent du meme point de lecture au lieu de recalculer chacun localement.
+- 2026-03-06: Ajout d'un cache proxy AnimeThemes partage cote API (`AnimeThemesProxyCache`) avec deduplication single-flight, service local des `Range` depuis disque temporaire et warm-up `round courant + N+1` au moment de la planification.
+- 2026-03-06: Suppression du vieux chemin serveur "tous les `mediaReady` HTML5 -> sortie immediate du loading", devenu mort depuis le passage au `roundSync` autoritaire et au quorum `client_prepared`.
 - 2026-03-06: Tests verifies:
   - `bun test apps/web/src/lib/notify.spec.ts apps/web/src/routes`
   - `bun run build` dans `apps/web`
   - `bash ./scripts/playwright.sh test apps/web/e2e/toast-feedback.spec.ts`
   - `bun test apps/api/tests/room-store.spec.ts apps/api/tests/quiz-routes.spec.ts`
   - `bun test apps/web/src/routes/room-play-anime.spec.tsx apps/web/src/routes/live-gameplay.spec.tsx apps/web/src/lib/notify.spec.ts`
+  - `bun test apps/api/tests/quiz-routes.spec.ts apps/api/tests/room-store.spec.ts apps/api/tests/round-sync-coordinator.spec.ts`
+  - `bun test apps/api/tests/round-sync-coordinator.spec.ts apps/api/tests/realtime-routes.spec.ts apps/api/tests/anime-themes-proxy-cache.spec.ts apps/api/tests/quiz-routes.spec.ts apps/api/tests/room-store.spec.ts`
+  - `bun test apps/web/src/lib/liveRoundTiming.spec.ts apps/web/src/routes/live-gameplay.spec.tsx apps/web/src/routes/room-play-anime.spec.tsx`
+  - `bun -e "import './apps/api/src/routes/realtime.ts'; import './apps/api/src/routes/quiz.ts'; console.log('api-routes-ok')"`
 - TODO eventuel: harmoniser ensuite les erreurs inline de formulaires si on veut moderniser aussi les champs, sans tout convertir en toast.

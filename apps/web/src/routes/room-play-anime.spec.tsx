@@ -14,7 +14,9 @@ describe("room play anime mode", () => {
     expect(file).toContain("ANIME_MEDIA_EXTREME_TIMEOUT_MS");
     expect(file).toContain("ANIME_MEDIA_SOFT_RETRY_TIMEOUT_MS");
     expect(file).toContain("ANIME_MEDIA_LONG_LOAD_TOAST_MS");
+    expect(file).toContain("ANIME_MEDIA_PREPARED_BUFFER_SEC");
     expect(file).toContain("Chargement du theme toujours en cours, nouvelle tentative...");
+    expect(file).toContain("video.buffered.end(index)");
     expect(file).not.toContain('state?.nextMedia?.provider === "animethemes"');
     expect(file).not.toContain("data-kwizik-next-anime-preload");
     expect(file).not.toContain("ANIME_MEDIA_ERROR_THRESHOLD = 3");

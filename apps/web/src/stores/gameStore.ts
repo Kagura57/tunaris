@@ -8,6 +8,16 @@ export type LiveRoundState = {
   round: number;
   totalRounds: number;
   deadlineMs: number | null;
+  roundSync: {
+    status: "idle" | "preparing" | "scheduled" | "playing";
+    phaseToken: string | null;
+    plannedStartAtMs: number | null;
+    maxWaitUntilMs: number | null;
+    mediaOffsetSec: number;
+    preparedCount: number;
+    requiredPreparedCount: number;
+    totalPlayerCount: number;
+  };
   guessDoneCount: number;
   guessTotalCount: number;
   mediaReadyCount: number;

@@ -1,10 +1,10 @@
 import { Elysia } from "elysia";
 import { readSessionFromHeaders } from "../auth/client";
-import { pool } from "../db/client";
 import { musicAccountRepository } from "../repositories/MusicAccountRepository";
 import { matchRepository } from "../repositories/MatchRepository";
 import { profileRepository } from "../repositories/ProfileRepository";
 import { userLikedTrackRepository } from "../repositories/UserLikedTrackRepository";
+import { AnimeThemesProxyError, animeThemesProxyCache } from "../services/AnimeThemesProxyCache";
 import { roomStore } from "../services/RoomStore";
 
 function readStringField(body: unknown, key: string): string | null {
@@ -41,48 +41,8 @@ function readOptionalNumberField(body: unknown, key: string) {
   return null;
 }
 
-const ANIMETHEMES_PROXY_RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
-const ANIMETHEMES_PROXY_RETRY_DELAYS_MS = [150, 300];
-
 function isSafeAnimeThemeVideoKey(value: string) {
   return /^[A-Za-z0-9_.-]{1,180}$/.test(value);
-}
-
-function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function fetchAnimeThemeVideo(input: {
-  webmUrl: string;
-  headers: Headers;
-  signal: AbortSignal;
-}) {
-  for (let attempt = 0; attempt <= ANIMETHEMES_PROXY_RETRY_DELAYS_MS.length; attempt += 1) {
-    try {
-      const response = await fetch(input.webmUrl, {
-        method: "GET",
-        headers: input.headers,
-        signal: input.signal,
-      });
-
-      if (
-        !ANIMETHEMES_PROXY_RETRYABLE_STATUSES.has(response.status) ||
-        attempt === ANIMETHEMES_PROXY_RETRY_DELAYS_MS.length
-      ) {
-        return response;
-      }
-
-      await response.body?.cancel().catch(() => undefined);
-    } catch (error) {
-      if (attempt === ANIMETHEMES_PROXY_RETRY_DELAYS_MS.length) {
-        throw error;
-      }
-    }
-
-    await delay(ANIMETHEMES_PROXY_RETRY_DELAYS_MS[attempt] ?? 0);
-  }
-
-  throw new Error("UPSTREAM_UNREACHABLE");
 }
 
 export const quizRoutes = new Elysia({ prefix: "/quiz" })
@@ -106,71 +66,20 @@ export const quizRoutes = new Elysia({ prefix: "/quiz" })
       return "INVALID_VIDEO_KEY";
     }
 
-    if (!(typeof process.env.DATABASE_URL === "string" && process.env.DATABASE_URL.trim().length > 0)) {
-      set.status = 503;
-      return "DATABASE_UNAVAILABLE";
-    }
-
-    const target = await pool.query<{ webm_url: string }>(
-      `
-        select webm_url
-        from anime_theme_videos
-        where video_key = $1
-        limit 1
-      `,
-      [videoKey],
-    );
-    const webmUrl = target.rows[0]?.webm_url?.trim() ?? "";
-    if (!webmUrl || !/^https?:\/\//i.test(webmUrl)) {
-      set.status = 404;
-      return "VIDEO_NOT_FOUND";
-    }
-
-    const upstreamHeaders = new Headers();
-    const range = request.headers.get("range");
-    if (range && /^bytes=\d*-\d*(,\d*-\d*)*$/.test(range)) {
-      upstreamHeaders.set("range", range);
-    }
-    upstreamHeaders.set("accept", "video/webm,*/*");
-
-    let upstream: Response;
     try {
-      upstream = await fetchAnimeThemeVideo({
-        webmUrl,
-        headers: upstreamHeaders,
+      return await animeThemesProxyCache.openByVideoKey(videoKey, {
+        rangeHeader: request.headers.get("range"),
+        ifRangeHeader: request.headers.get("if-range"),
         signal: request.signal,
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof AnimeThemesProxyError) {
+        set.status = error.status;
+        return error.body ?? error.code;
+      }
       set.status = 502;
       return "UPSTREAM_UNREACHABLE";
     }
-
-    if (!upstream.ok && upstream.status !== 206) {
-      set.status = upstream.status;
-      return await upstream.text();
-    }
-
-    const headers = new Headers();
-    for (const name of [
-      "content-type",
-      "content-length",
-      "content-range",
-      "accept-ranges",
-      "cache-control",
-      "etag",
-      "last-modified",
-    ]) {
-      const value = upstream.headers.get(name);
-      if (value) {
-        headers.set(name, value);
-      }
-    }
-    headers.set("x-kwizik-media-proxy", "animethemes");
-
-    return new Response(upstream.body, {
-      status: upstream.status,
-      headers,
-    });
   })
   .post("/join", async ({ body, headers, set }) => {
     const roomCode = readStringField(body, "roomCode");
@@ -661,6 +570,41 @@ export const quizRoutes = new Elysia({ prefix: "/quiz" })
       deadlineMs: result.deadlineMs,
     };
   })
+  .post("/media/prepared", ({ body, set }) => {
+    const roomCode = readStringField(body, "roomCode");
+    const playerId = readStringField(body, "playerId");
+    const trackId = readStringField(body, "trackId");
+    if (!roomCode || !playerId || !trackId) {
+      set.status = 400;
+      return { ok: false, error: "INVALID_PAYLOAD" };
+    }
+
+    const result = roomStore.reportMediaPrepared(roomCode, playerId, trackId);
+    if (result.status === "room_not_found") {
+      set.status = 404;
+      return { ok: false, error: "ROOM_NOT_FOUND" };
+    }
+    if (result.status === "player_not_found") {
+      set.status = 404;
+      return { ok: false, error: "PLAYER_NOT_FOUND" };
+    }
+    if (result.status === "invalid_state") {
+      set.status = 409;
+      return { ok: false, error: "INVALID_STATE" };
+    }
+    if (result.status === "invalid_payload") {
+      set.status = 400;
+      return { ok: false, error: "INVALID_PAYLOAD" };
+    }
+
+    return {
+      ok: true as const,
+      accepted: result.accepted,
+      state: result.state,
+      round: result.round,
+      deadlineMs: result.deadlineMs,
+    };
+  })
   .post("/media/ready", ({ body, set }) => {
     const roomCode = readStringField(body, "roomCode");
     const playerId = readStringField(body, "playerId");
@@ -670,7 +614,7 @@ export const quizRoutes = new Elysia({ prefix: "/quiz" })
       return { ok: false, error: "INVALID_PAYLOAD" };
     }
 
-    const result = roomStore.markMediaReady(roomCode, playerId, trackId);
+    const result = roomStore.reportMediaPrepared(roomCode, playerId, trackId);
     if (result.status === "room_not_found") {
       set.status = 404;
       return { ok: false, error: "ROOM_NOT_FOUND" };

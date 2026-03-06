@@ -11,6 +11,16 @@ describe("live gameplay store", () => {
       round: 1,
       totalRounds: 10,
       deadlineMs: 123,
+      roundSync: {
+        status: "scheduled",
+        phaseToken: "phase-1",
+        plannedStartAtMs: 1_234,
+        maxWaitUntilMs: 2_345,
+        mediaOffsetSec: 12,
+        preparedCount: 1,
+        requiredPreparedCount: 2,
+        totalPlayerCount: 3,
+      },
       guessDoneCount: 1,
       guessTotalCount: 2,
       mediaReadyCount: 0,
@@ -37,5 +47,15 @@ describe("live gameplay store", () => {
     expect(store.getState().liveRound?.phase).toBe("playing");
     expect(store.getState().liveRound?.mode).toBe("mcq");
     expect(store.getState().liveRound?.media?.provider).toBe("animethemes");
+    expect(store.getState().liveRound?.roundSync).toEqual({
+      status: "scheduled",
+      phaseToken: "phase-1",
+      plannedStartAtMs: 1_234,
+      maxWaitUntilMs: 2_345,
+      mediaOffsetSec: 12,
+      preparedCount: 1,
+      requiredPreparedCount: 2,
+      totalPlayerCount: 3,
+    });
   });
 });

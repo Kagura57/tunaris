@@ -8,7 +8,7 @@ import {
   HttpStatusError,
   kickPlayer,
   leaveRoom as leaveRoomApi,
-  markRoomMediaReady,
+  markRoomMediaPrepared,
   reportRoomMediaUnavailable,
   replayRoom,
   searchAnimeAutocomplete,
@@ -28,6 +28,13 @@ import {
 } from "../../../lib/api";
 import { notify } from "../../../lib/notify";
 import { fetchLiveRoomState } from "../../../lib/realtime";
+import {
+  getEffectiveRoomDeadlineMs,
+  getEffectiveRoomPhase,
+  getEffectiveRoomStartedAtMs,
+  getNextRoomTransitionAtMs,
+} from "../../../lib/liveRoundTiming";
+import { useRoomRealtimeSubscription } from "../../../lib/useRoomRealtimeSubscription";
 import { useGameStore } from "../../../stores/gameStore";
 
 const ROUND_MS = 20_000;
@@ -37,6 +44,7 @@ const LEADERBOARD_MS = 0;
 const ANIME_MEDIA_LONG_LOAD_TOAST_MS = 20_000;
 const ANIME_MEDIA_SOFT_RETRY_TIMEOUT_MS = 90_000;
 const ANIME_MEDIA_EXTREME_TIMEOUT_MS = 180_000;
+const ANIME_MEDIA_PREPARED_BUFFER_SEC = 1.25;
 const MEDIA_READY_RETRY_DELAY_MS = 350;
 const MEDIA_READY_RETRY_MAX_ATTEMPTS = 4;
 
@@ -235,37 +243,6 @@ function phaseProgress(phase: string | undefined, remainingMs: number | null) {
   return 0;
 }
 
-function stableHash(value: string) {
-  let hash = 2_166_136_261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16_777_619);
-  }
-  return hash >>> 0;
-}
-
-function deterministicIntFromSeed(seed: string, min: number, max: number) {
-  const safeMin = Math.max(0, Math.floor(min));
-  const safeMax = Math.max(safeMin, Math.floor(max));
-  const size = safeMax - safeMin + 1;
-  if (size <= 1) return safeMin;
-  return safeMin + (stableHash(seed) % size);
-}
-
-function computeAnimeStartSec(input: {
-  roomCode: string;
-  round: number;
-  trackId: string;
-  durationSec: number;
-}) {
-  const safeDuration = Math.max(0, Math.floor(input.durationSec));
-  const roundDurationSec = Math.max(1, Math.floor(ROUND_MS / 1000));
-  if (safeDuration <= roundDurationSec) return 0;
-  const maxStart = Math.max(0, safeDuration - roundDurationSec);
-  const seed = `${input.roomCode}:${input.round}:${input.trackId}`;
-  return deterministicIntFromSeed(seed, 0, maxStart);
-}
-
 const WAVE_BARS = Array.from({ length: 48 }, (_, index) => ({
   key: index,
   heightPercent: 22 + ((index * 17) % 70),
@@ -456,7 +433,6 @@ export function RoomPlayPage() {
   const draftSignatureRef = useRef<string | null>(null);
   const reportedUnavailableMediaRef = useRef<string | null>(null);
   const reportedMediaReadyRef = useRef<string | null>(null);
-  const appliedAnimeStartRef = useRef<string | null>(null);
   const failedAnimeTrackKeyRef = useRef<string | null>(null);
   const animeLongLoadToastRef = useRef<string | null>(null);
   const animeLastProgressAtRef = useRef<number | null>(null);
@@ -482,6 +458,7 @@ export function RoomPlayPage() {
     return () => window.clearInterval(id);
   }, [serverClockOffsetMs]);
 
+  const realtimeConnected = useRoomRealtimeSubscription(roomCode);
   const snapshotQuery = useQuery({
     queryKey: ["realtime-room", roomCode],
     queryFn: async () => {
@@ -493,7 +470,7 @@ export function RoomPlayPage() {
         serverNowMs: snapshot.serverNowMs,
       };
     },
-    refetchInterval: 1_000,
+    refetchInterval: realtimeConnected ? false : 1_000,
   });
 
   const state = snapshotQuery.data?.snapshot;
@@ -501,6 +478,33 @@ export function RoomPlayPage() {
     if (typeof snapshotQuery.data?.serverNowMs !== "number") return;
     setServerClockOffsetMs(snapshotQuery.data.serverNowMs - Date.now());
   }, [snapshotQuery.data?.serverNowMs]);
+  const effectivePhase = useMemo(
+    () => getEffectiveRoomPhase(state, clockNow),
+    [clockNow, state],
+  );
+  const effectiveDeadlineMs = useMemo(
+    () => getEffectiveRoomDeadlineMs(state, clockNow, ROUND_MS),
+    [clockNow, state],
+  );
+  const effectiveStartedAtMs = useMemo(
+    () => getEffectiveRoomStartedAtMs(state, clockNow, ROUND_MS),
+    [clockNow, state],
+  );
+  const nextTransitionAtMs = useMemo(
+    () => getNextRoomTransitionAtMs(state),
+    [state?.deadlineMs, state?.roundSync?.plannedStartAtMs, state?.state],
+  );
+
+  useEffect(() => {
+    if (nextTransitionAtMs === null) return;
+    const delayMs = Math.max(0, nextTransitionAtMs - (Date.now() + serverClockOffsetMs) + 40);
+    const timeoutId = window.setTimeout(() => {
+      snapshotQuery.refetch().catch(() => undefined);
+    }, delayMs);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [nextTransitionAtMs, serverClockOffsetMs, snapshotQuery.refetch]);
 
   useEffect(() => {
     if (roomMissingRedirectedRef.current) return;
@@ -638,7 +642,7 @@ export function RoomPlayPage() {
   const animeAutocompleteQuery = useQuery({
     queryKey: ["anime-autocomplete", debouncedAnswer],
     queryFn: () => searchAnimeAutocomplete({ q: debouncedAnswer, limit: 12 }),
-    enabled: debouncedAnswer.length >= 1 && state?.state === "playing" && state.mode === "text",
+    enabled: debouncedAnswer.length >= 1 && effectivePhase === "playing" && state?.mode === "text",
     staleTime: 30_000,
     retry: 1,
   });
@@ -721,7 +725,7 @@ export function RoomPlayPage() {
     return { value: normalized, label: normalized };
   }, [answer, answerSelectOptions]);
   const answerSeedIsLoading =
-    state?.state === "playing" &&
+    effectivePhase === "playing" &&
     state.mode === "text" &&
     (isResolvingTracks ||
       bulkAnswerSuggestionsQuery.isFetching ||
@@ -769,12 +773,13 @@ export function RoomPlayPage() {
     }
 
     setLiveRound({
-      phase: state.state,
-      isLoadingMedia: state.state === "loading",
+      phase: effectivePhase ?? state.state,
+      isLoadingMedia: effectivePhase === "loading",
       mode: state.mode,
       round: state.round,
       totalRounds: state.totalRounds,
-      deadlineMs: state.deadlineMs,
+      deadlineMs: effectiveDeadlineMs,
+      roundSync: state.roundSync,
       guessDoneCount: state.guessDoneCount,
       guessTotalCount: state.guessTotalCount,
       mediaReadyCount: state.mediaReadyCount,
@@ -802,7 +807,7 @@ export function RoomPlayPage() {
         : null,
       leaderboard: state.leaderboard,
     });
-  }, [setLiveRound, state]);
+  }, [effectiveDeadlineMs, effectivePhase, setLiveRound, state]);
 
   const startMutation = useMutation({
     mutationFn: () => {
@@ -1072,7 +1077,7 @@ export function RoomPlayPage() {
   const mediaReadyMutation = useMutation({
     mutationFn: (trackId: string) => {
       if (!session.playerId) throw new Error("PLAYER_NOT_FOUND");
-      return markRoomMediaReady({
+      return markRoomMediaPrepared({
         roomCode,
         playerId: session.playerId,
         trackId,
@@ -1123,10 +1128,10 @@ export function RoomPlayPage() {
       return result;
     },
     onSuccess: (_result, value) => {
-      if (state?.state === "playing" && state.mode === "mcq") {
+      if (effectivePhase === "playing" && state?.mode === "mcq") {
         setSubmittedMcq({ round: state.round, choice: value });
       }
-      if (state?.state === "playing" && state.mode === "text") {
+      if (effectivePhase === "playing" && state?.mode === "text") {
         setSubmittedText({ round: state.round, value });
       }
       snapshotQuery.refetch();
@@ -1199,11 +1204,11 @@ export function RoomPlayPage() {
   }, [isNonBlockingStartError, startMutation]);
 
   const remainingMs = useMemo(() => {
-    if (!state?.deadlineMs) return null;
-    return state.deadlineMs - clockNow;
-  }, [clockNow, state?.deadlineMs]);
+    if (!effectiveDeadlineMs) return null;
+    return effectiveDeadlineMs - clockNow;
+  }, [clockNow, effectiveDeadlineMs]);
   const roundMediaKey = `${state?.round ?? 0}:${state?.media?.trackId ?? state?.reveal?.trackId ?? "none"}`;
-  const progressKey = `${state?.state ?? "none"}:${state?.round ?? 0}:${state?.deadlineMs ?? 0}:${state?.media?.trackId ?? state?.reveal?.trackId ?? "none"}`;
+  const progressKey = `${effectivePhase ?? state?.state ?? "none"}:${state?.round ?? 0}:${effectiveDeadlineMs ?? 0}:${state?.media?.trackId ?? state?.reveal?.trackId ?? "none"}`;
 
   useEffect(() => {
     if (!state) {
@@ -1234,7 +1239,7 @@ export function RoomPlayPage() {
     }
 
     postRoundProgressRef.current = null;
-    const rawProgress = phaseProgress(state.state, remainingMs);
+    const rawProgress = phaseProgress(effectivePhase ?? state.state, remainingMs);
     const previous = progressStateRef.current;
     const nextProgress =
       previous.key === progressKey ? Math.max(previous.value, rawProgress) : rawProgress;
@@ -1244,7 +1249,7 @@ export function RoomPlayPage() {
       value: nextProgress,
     };
     setProgress(nextProgress);
-  }, [progressKey, remainingMs, state]);
+  }, [effectivePhase, progressKey, remainingMs, state]);
 
   const youtubePlayback = useMemo(() => {
     if (!state?.media?.embedUrl || !state.media.trackId) return null;
@@ -1310,24 +1315,24 @@ export function RoomPlayPage() {
   const revealVideoActive =
     (usingYouTubePlayback || usingAnimeVideoPlayback) &&
     state?.state !== "waiting" &&
-    state?.state !== "loading" &&
-    state?.state !== "playing" &&
+    effectivePhase !== "loading" &&
+    effectivePhase !== "playing" &&
     state?.state !== "results";
   const isResults = state?.state === "results";
   const hasServerLockedGuess =
-    state?.state === "playing" && Boolean(currentPlayer?.hasAnsweredCurrentRound);
+    effectivePhase === "playing" && Boolean(currentPlayer?.hasAnsweredCurrentRound);
   const mcqLocked =
-    state?.state === "playing" &&
+    effectivePhase === "playing" &&
     state.mode === "mcq" &&
     (hasServerLockedGuess || (submittedMcq !== null && submittedMcq.round === state.round));
   const textLocked =
-    state?.state === "playing" &&
+    effectivePhase === "playing" &&
     state.mode === "text" &&
     (hasServerLockedGuess || (submittedText !== null && submittedText.round === state.round));
   const roundLabel = `${state?.round ?? 0}/${state?.totalRounds ?? 0}`;
   const revealArtwork = state?.reveal ? revealArtworkUrl(state.reveal) : null;
   const hasLockedGuessVote =
-    state?.state === "playing" &&
+    effectivePhase === "playing" &&
     phaseSkipVote?.phase === "playing" &&
     phaseSkipVote.round === state.round;
   const hasLockedRevealVote =
@@ -1343,6 +1348,57 @@ export function RoomPlayPage() {
 
   function markAnimeProgress() {
     animeLastProgressAtRef.current = Date.now();
+  }
+
+  function animeBufferedAheadSec(video: HTMLVideoElement) {
+    const currentTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+    for (let index = 0; index < video.buffered.length; index += 1) {
+      const start = video.buffered.start(index);
+      const end = video.buffered.end(index);
+      if (currentTime + 0.25 < start || currentTime > end + 0.25) continue;
+      return Math.max(0, end - currentTime);
+    }
+    return 0;
+  }
+
+  function hasEnoughAnimeReadyBuffer(video: HTMLVideoElement) {
+    if (video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) return false;
+    return animeBufferedAheadSec(video) >= ANIME_MEDIA_PREPARED_BUFFER_SEC;
+  }
+
+  function currentRoundMediaOffsetSec() {
+    return Math.max(0, state?.roundSync?.mediaOffsetSec ?? 0);
+  }
+
+  function timelinePlaybackTargetSec(nowMs: number) {
+    const baseOffsetSec = currentRoundMediaOffsetSec();
+    if (effectivePhase !== "playing" || effectiveStartedAtMs === null) {
+      return baseOffsetSec;
+    }
+    return baseOffsetSec + Math.max(0, nowMs - effectiveStartedAtMs) / 1_000;
+  }
+
+  function syncMediaElementToTimeline(
+    media: HTMLMediaElement | null,
+    nowMs = Date.now() + serverClockOffsetMs,
+  ) {
+    if (!media) return;
+
+    const rawTargetSec = timelinePlaybackTargetSec(nowMs);
+    const duration =
+      typeof media.duration === "number" && Number.isFinite(media.duration)
+        ? Math.max(0, media.duration)
+        : null;
+    const targetSec =
+      duration === null ? rawTargetSec : Math.min(rawTargetSec, Math.max(0, duration - 0.25));
+
+    try {
+      if (Math.abs(media.currentTime - targetSec) > 0.45) {
+        media.currentTime = targetSec;
+      }
+    } catch {
+      // Ignore seek errors while metadata or a segmented response is still settling.
+    }
   }
 
   function handleAnimeMediaUnavailable(input?: { force?: boolean }) {
@@ -1401,7 +1457,6 @@ export function RoomPlayPage() {
       count: previousAttempt + 1,
     };
     reportedMediaReadyRef.current = null;
-    appliedAnimeStartRef.current = null;
     setAudioError(false);
     setAnimePlaybackStatus("buffering");
 
@@ -1418,29 +1473,6 @@ export function RoomPlayPage() {
     return true;
   }
 
-  function applyAnimeRandomStart(video: HTMLVideoElement) {
-    if (!state?.media || state.media.provider !== "animethemes") return;
-    const duration = Number.isFinite(video.duration) ? Number(video.duration) : 0;
-    const startSec = computeAnimeStartSec({
-      roomCode,
-      round: state.round,
-      trackId: state.media.trackId,
-      durationSec: duration,
-    });
-    const startKey = `${state.round}:${state.media.trackId}`;
-    if (appliedAnimeStartRef.current === startKey) return;
-    appliedAnimeStartRef.current = startKey;
-
-    if (startSec <= 0) return;
-    try {
-      if (Math.abs(video.currentTime - startSec) > 0.35) {
-        video.currentTime = startSec;
-      }
-    } catch {
-      // Ignore seek errors while metadata/streaming pipeline settles.
-    }
-  }
-
   function signalAnimeMediaReady() {
     if (!state?.media || state.media.provider !== "animethemes") return;
     if (state.state !== "loading") return;
@@ -1453,38 +1485,48 @@ export function RoomPlayPage() {
     mediaReadyMutation.mutate(state.media.trackId);
   }
 
+  function trySignalAnimeMediaReady(video: HTMLVideoElement | null) {
+    if (!video) return false;
+    if (!hasEnoughAnimeReadyBuffer(video)) {
+      setAnimePlaybackStatus("buffering");
+      return false;
+    }
+    setAnimePlaybackStatus("ready");
+    markAnimeProgress();
+    signalAnimeMediaReady();
+    return true;
+  }
+
   function handleAnimeLoadedMetadata() {
     const video = animeVideoRef.current;
     if (!video) return;
     setAnimePlaybackStatus("buffering");
-    applyAnimeRandomStart(video);
+    syncMediaElementToTimeline(video);
     markAnimeProgress();
   }
 
   function handleAnimeLoadedData() {
     const video = animeVideoRef.current;
     if (video) {
-      applyAnimeRandomStart(video);
-      setAnimePlaybackStatus("ready");
+      syncMediaElementToTimeline(video);
+      trySignalAnimeMediaReady(video);
     }
     markAnimeProgress();
-    signalAnimeMediaReady();
   }
 
   function handleAnimeCanPlay() {
     const video = animeVideoRef.current;
     if (video) {
-      applyAnimeRandomStart(video);
-      setAnimePlaybackStatus("ready");
+      syncMediaElementToTimeline(video);
+      trySignalAnimeMediaReady(video);
     }
     markAnimeProgress();
-    signalAnimeMediaReady();
   }
 
   function handleAnimePlaying() {
     const video = animeVideoRef.current;
     if (video) {
-      applyAnimeRandomStart(video);
+      syncMediaElementToTimeline(video);
     }
     setAnimePlaybackStatus("playing");
     markAnimeProgress();
@@ -1501,18 +1543,17 @@ export function RoomPlayPage() {
       return;
     }
     if (
-      state.state !== phaseSkipVote.phase ||
+      (effectivePhase ?? state.state) !== phaseSkipVote.phase ||
       state.round !== phaseSkipVote.round ||
-      (state.state !== "playing" && state.state !== "reveal")
+      ((effectivePhase ?? state.state) !== "playing" && state.state !== "reveal")
     ) {
       setPhaseSkipVote(null);
     }
-  }, [phaseSkipVote, state]);
+  }, [effectivePhase, phaseSkipVote, state]);
 
   useEffect(() => {
     reportedUnavailableMediaRef.current = null;
     reportedMediaReadyRef.current = null;
-    appliedAnimeStartRef.current = null;
     failedAnimeTrackKeyRef.current = null;
     animeLongLoadToastRef.current = null;
     animeReloadAttemptRef.current = null;
@@ -1584,16 +1625,15 @@ export function RoomPlayPage() {
 
     if (!activeAnimeVideoSource) {
       video.pause();
-      appliedAnimeStartRef.current = null;
       reportedMediaReadyRef.current = null;
       setAnimePlaybackStatus("idle");
       return;
     }
 
-    appliedAnimeStartRef.current = null;
     reportedMediaReadyRef.current = null;
     setAnimePlaybackStatus("buffering");
     animeLastProgressAtRef.current = Date.now();
+    syncMediaElementToTimeline(video);
   }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key]);
 
   useEffect(() => {
@@ -1602,18 +1642,22 @@ export function RoomPlayPage() {
 
     function onProgress() {
       markAnimeProgress();
+      if (state?.state === "loading") {
+        trySignalAnimeMediaReady(video);
+      }
     }
 
     video.addEventListener("progress", onProgress);
     return () => {
       video.removeEventListener("progress", onProgress);
     };
-  }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key]);
+  }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key, state?.state]);
 
   useEffect(() => {
     const video = animeVideoRef.current;
     if (!video || !activeAnimeVideoSource) return;
-    if (state?.state === "loading") {
+    syncMediaElementToTimeline(video);
+    if (effectivePhase !== "playing") {
       video.pause();
       return;
     }
@@ -1624,7 +1668,23 @@ export function RoomPlayPage() {
         handleAnimePlaybackIssue();
       });
     }
-  }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key, state?.state]);
+  }, [activeAnimeVideoSource, effectivePhase, stableAnimeVideoPlayback?.key]);
+
+  useEffect(() => {
+    if (effectivePhase !== "playing" || !activeAnimeVideoSource) return;
+    const intervalId = window.setInterval(() => {
+      syncMediaElementToTimeline(animeVideoRef.current);
+    }, 1_250);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [
+    activeAnimeVideoSource,
+    effectivePhase,
+    effectiveStartedAtMs,
+    serverClockOffsetMs,
+    state?.roundSync?.mediaOffsetSec,
+  ]);
 
   useEffect(() => {
     const activeProvider = state?.media?.provider ?? state?.reveal?.provider ?? null;
@@ -1647,6 +1707,7 @@ export function RoomPlayPage() {
     );
   }, [
     audioError,
+    effectivePhase,
     roomCode,
     state?.media?.provider,
     state?.media?.trackId,
@@ -1731,6 +1792,12 @@ export function RoomPlayPage() {
       audio.currentTime = 0;
     }
 
+    syncMediaElementToTimeline(audio);
+    if (effectivePhase !== "playing") {
+      audio.pause();
+      return;
+    }
+
     const playPromise = audio.play();
     if (playPromise) {
       playPromise.catch(() => {
@@ -1743,20 +1810,20 @@ export function RoomPlayPage() {
         }, 320);
       });
     }
-  }, [activeAnimeVideoSource, activeYoutubeEmbed, state?.previewUrl, state?.state]);
+  }, [activeAnimeVideoSource, activeYoutubeEmbed, effectivePhase, state?.previewUrl]);
 
   useEffect(() => {
     function unlockAudioPlayback() {
       const shouldKickIframe = Boolean(activeYoutubeEmbed) && !userInteractionUnlockedRef.current;
       userInteractionUnlockedRef.current = true;
-      const canAutoPlayAnime = state?.state !== "loading";
+      const canAutoPlayMedia = effectivePhase === "playing";
 
       const audio = audioRef.current;
-      if (audio && audio.src) {
+      if (audio && audio.src && canAutoPlayMedia) {
         audio.play().catch(() => undefined);
       }
       const video = animeVideoRef.current;
-      if (video && activeAnimeVideoSource && canAutoPlayAnime) {
+      if (video && activeAnimeVideoSource && canAutoPlayMedia) {
         video.play().catch(() => undefined);
       }
       if (shouldKickIframe) {
@@ -1771,7 +1838,7 @@ export function RoomPlayPage() {
       window.removeEventListener("pointerdown", unlockAudioPlayback);
       window.removeEventListener("keydown", unlockAudioPlayback);
     };
-  }, [activeAnimeVideoSource, activeYoutubeEmbed, state?.state]);
+  }, [activeAnimeVideoSource, activeYoutubeEmbed, effectivePhase]);
 
   useEffect(() => {
     return () => {
@@ -1783,7 +1850,7 @@ export function RoomPlayPage() {
 
   useEffect(() => {
     if (!state) return;
-    if (state.state !== "playing") {
+    if (effectivePhase !== "playing") {
       setSubmittedMcq(null);
       setSubmittedText(null);
       return;
@@ -1796,7 +1863,7 @@ export function RoomPlayPage() {
       setSubmittedText(null);
       setAnswer("");
     }
-  }, [state, submittedMcq, submittedText]);
+  }, [effectivePhase, state, submittedMcq, submittedText]);
 
   useEffect(() => {
     if (!state || state.round <= 0) return;
@@ -1806,7 +1873,7 @@ export function RoomPlayPage() {
   useEffect(() => {
     if (
       !state ||
-      state.state !== "playing" ||
+      effectivePhase !== "playing" ||
       state.mode !== "text" ||
       !session.playerId ||
       textLocked
@@ -1826,19 +1893,20 @@ export function RoomPlayPage() {
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [answer, answerDraftMutation, session.playerId, state, textLocked]);
+  }, [answer, answerDraftMutation, effectivePhase, session.playerId, state, textLocked]);
 
   useEffect(() => {
-    if (!state || state.state !== "playing" || state.mode !== "text") {
+    if (!state || effectivePhase !== "playing" || state.mode !== "text") {
       autoSubmitSignatureRef.current = null;
       return;
     }
-    if (!session.playerId || textLocked || answerMutation.isPending || !state.deadlineMs) return;
+    if (!session.playerId || textLocked || answerMutation.isPending || effectiveDeadlineMs === null)
+      return;
 
     const value = answer.trim();
     if (!value) return;
 
-    const remainingMs = state.deadlineMs - clockNow;
+    const remainingMs = effectiveDeadlineMs - clockNow;
     if (remainingMs > 220 || remainingMs < -700) return;
 
     const signature = `${state.round}:${value.toLowerCase()}`;
@@ -1846,11 +1914,11 @@ export function RoomPlayPage() {
     autoSubmitSignatureRef.current = signature;
 
     answerMutation.mutate(value);
-  }, [answer, answerMutation, clockNow, session.playerId, state, textLocked]);
+  }, [answer, answerMutation, clockNow, effectiveDeadlineMs, effectivePhase, session.playerId, state, textLocked]);
 
   function onSubmitText(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!state || state.state !== "playing" || state.mode !== "text") return;
+    if (!state || effectivePhase !== "playing" || state.mode !== "text") return;
     if (textLocked) return;
 
     const value = answer.trim();
@@ -1860,7 +1928,7 @@ export function RoomPlayPage() {
   }
 
   function onSelectChoice(choice: string) {
-    if (!state || state.state !== "playing" || state.mode !== "mcq") return;
+    if (!state || effectivePhase !== "playing" || state.mode !== "mcq") return;
     if (!session.playerId || mcqLocked) return;
     answerMutation.mutate(choice);
   }
@@ -2086,7 +2154,7 @@ export function RoomPlayPage() {
                     <span style={{ width: `${(progress * 100).toFixed(3)}%` }} />
                   </div>
                 </div>
-                {state?.state === "loading" && usingAnimeVideoPlayback && (
+                {effectivePhase === "loading" && usingAnimeVideoPlayback && (
                   <div className="media-loading-overlay" role="status" aria-live="polite">
                     <span className="resolving-tracks-spinner" aria-hidden="true" />
                     <p>Chargement de la video...</p>
@@ -2265,7 +2333,7 @@ export function RoomPlayPage() {
             </div>
           )}
 
-          {state?.state === "playing" && state.mode === "mcq" && (
+          {effectivePhase === "playing" && state.mode === "mcq" && (
             <div className="mcq-grid">
               {(state.choices ?? []).map((choice, index) => (
                 <button
@@ -2280,7 +2348,7 @@ export function RoomPlayPage() {
             </div>
           )}
 
-          {state?.state === "playing" && state.mode === "text" && (
+          {effectivePhase === "playing" && state.mode === "text" && (
             <form className="panel-form answer-box" onSubmit={onSubmitText}>
               <label>
                 <span>Réponse (nom de l'anime)</span>
@@ -2331,7 +2399,7 @@ export function RoomPlayPage() {
             </form>
           )}
 
-          {state?.state === "playing" && (
+          {effectivePhase === "playing" && (
             <div className="phase-skip-panel">
               <button
                 className="ghost-btn"

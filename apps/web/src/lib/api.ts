@@ -133,6 +133,16 @@ export type RoomState = {
   };
   totalRounds: number;
   deadlineMs: number | null;
+  roundSync: {
+    status: "idle" | "preparing" | "scheduled" | "playing";
+    phaseToken: string | null;
+    plannedStartAtMs: number | null;
+    maxWaitUntilMs: number | null;
+    mediaOffsetSec: number;
+    preparedCount: number;
+    requiredPreparedCount: number;
+    totalPlayerCount: number;
+  };
   guessDoneCount: number;
   guessTotalCount: number;
   mediaReadyCount: number;
@@ -668,7 +678,7 @@ export async function reportRoomMediaUnavailable(input: {
   });
 }
 
-export async function markRoomMediaReady(input: {
+export async function markRoomMediaPrepared(input: {
   roomCode: string;
   playerId: string;
   trackId: string;
@@ -679,10 +689,18 @@ export async function markRoomMediaReady(input: {
     state: string;
     round: number;
     deadlineMs: number | null;
-  }>("/quiz/media/ready", {
+  }>("/quiz/media/prepared", {
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export async function markRoomMediaReady(input: {
+  roomCode: string;
+  playerId: string;
+  trackId: string;
+}) {
+  return markRoomMediaPrepared(input);
 }
 
 export async function submitRoomAnswer(input: {

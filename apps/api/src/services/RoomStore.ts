@@ -15,6 +15,8 @@ import { readEnvVar } from "../lib/env";
 import { userAnimeLibraryRepository } from "../repositories/UserAnimeLibraryRepository";
 import { userLikedTrackRepository } from "../repositories/UserLikedTrackRepository";
 import { normalizeAnimeText } from "./AnimeTextNormalization";
+import { animeThemesProxyCache } from "./AnimeThemesProxyCache";
+import { RoundSyncCoordinator } from "./RoundSyncCoordinator";
 
 type RoundMode = "mcq" | "text";
 type RoundChoice = {
@@ -65,6 +67,8 @@ type RoomSession = {
   createdAtMs: number;
   isPublic: boolean;
   manager: RoomManager;
+  roundSync: RoundSyncCoordinator;
+  roundSyncRound: number | null;
   players: Map<string, Player>;
   hostPlayerId: string | null;
   nextPlayerNumber: number;
@@ -144,6 +148,10 @@ const TRACK_POOL_MAX_CANDIDATES = 100;
 const YOUTUBE_RANDOM_START_MIN_SEC = 18;
 const YOUTUBE_RANDOM_START_END_BUFFER_SEC = 20;
 const YOUTUBE_RANDOM_START_MIN_DURATION_SEC = 45;
+const ANIMETHEMES_RANDOM_START_ROUND_BUFFER_SEC = Math.max(
+  1,
+  Math.floor(DEFAULT_ROUND_CONFIG.playingMs / 1_000),
+);
 const MCQ_REQUIRED_CHOICES = 4;
 const START_POOL_RETRY_ATTEMPTS = 3;
 const START_POOL_RETRY_DELAY_MS = 900;
@@ -152,6 +160,8 @@ const ANIMETHEMES_EXTREME_TIMEOUT_MS = 180_000;
 const ROOM_ANSWER_SUGGESTION_LIMIT = 1_000;
 const ROOM_BULK_ANSWER_TRACK_LIMIT = 16_000;
 const ROOM_BULK_ANSWER_SUGGESTION_LIMIT = 24_000;
+const ROUND_SYNC_START_LEAD_MS = 900;
+const ROUND_SYNC_MAX_WAIT_MS = 2_000;
 
 function readApiBaseUrl() {
   const fromBetterAuth = readEnvVar("BETTER_AUTH_URL")?.trim() ?? "";
@@ -194,6 +204,7 @@ type RoomStoreDependencies = {
     size: number;
     allowExternalResolve?: boolean;
   }) => Promise<MusicTrack[]>;
+  warmAnimeThemeVideo?: (videoKey: string) => Promise<void>;
   config?: Partial<RoundConfig>;
 };
 
@@ -580,6 +591,38 @@ function youtubeRoundStartSeconds(
   return deterministicIntFromSeed(seed, minStart, maxStart);
 }
 
+function animethemesRoundStartSeconds(
+  track: Pick<MusicTrack, "id" | "durationSec">,
+  context: { roomCode: string; round: number },
+) {
+  const durationSec =
+    typeof track.durationSec === "number" && Number.isFinite(track.durationSec)
+      ? Math.max(0, Math.floor(track.durationSec))
+      : null;
+
+  if (durationSec === null || durationSec <= ANIMETHEMES_RANDOM_START_ROUND_BUFFER_SEC) {
+    return 0;
+  }
+
+  const maxStart = Math.max(0, durationSec - ANIMETHEMES_RANDOM_START_ROUND_BUFFER_SEC);
+  const seed = `${context.roomCode}:${context.round}:${track.id}`;
+  return deterministicIntFromSeed(seed, 0, maxStart);
+}
+
+function roundMediaOffsetSeconds(
+  track: Pick<MusicTrack, "provider" | "id" | "durationSec"> | null,
+  context: { roomCode: string; round: number },
+) {
+  if (!track) return 0;
+  if (track.provider === "youtube") {
+    return youtubeRoundStartSeconds(track, context);
+  }
+  if (track.provider === "animethemes") {
+    return animethemesRoundStartSeconds(track, context);
+  }
+  return 0;
+}
+
 function embedUrlForTrack(
   track: Pick<MusicTrack, "provider" | "id" | "durationSec">,
   context?: { roomCode: string; round: number },
@@ -678,6 +721,7 @@ export class RoomStore {
     size: number;
     allowExternalResolve?: boolean;
   }) => Promise<MusicTrack[]>;
+  private readonly warmAnimeThemeVideo: (videoKey: string) => Promise<void>;
   private readonly config: RoundConfig;
 
   constructor(dependencies: RoomStoreDependencies = {}) {
@@ -685,6 +729,8 @@ export class RoomStore {
     this.getTrackPool = dependencies.getTrackPool ?? ((categoryQuery, size) =>
       trackCache.getOrBuild(categoryQuery, size));
     this.getPlayerLikedTracks = dependencies.getPlayerLikedTracks ?? fetchSyncedUserLikedTracksForProviders;
+    this.warmAnimeThemeVideo = dependencies.warmAnimeThemeVideo ?? ((videoKey) =>
+      animeThemesProxyCache.warmByVideoKey(videoKey).then(() => undefined));
     this.config = {
       ...DEFAULT_ROUND_CONFIG,
       ...(dependencies.config ?? {}),
@@ -1383,6 +1429,26 @@ export class RoomStore {
     return Math.max(configured, ANIMETHEMES_EXTREME_TIMEOUT_MS);
   }
 
+  private warmAnimeThemesRoundTrack(session: RoomSession, round: number) {
+    const track = this.trackForRound(session, round);
+    if (!track || track.provider !== "animethemes" || !track.id) return;
+    void this.warmAnimeThemeVideo(track.id).catch((error) => {
+      logEvent("warn", "room_animethemes_warm_failed", {
+        roomCode: session.roomCode,
+        round,
+        trackId: track.id,
+        error: error instanceof Error ? error.message : "UNKNOWN_ERROR",
+      });
+    });
+  }
+
+  private warmUpcomingAnimeThemesTracks(session: RoomSession, currentRound: number) {
+    const rounds = new Set([currentRound, currentRound + 1]);
+    for (const round of rounds) {
+      this.warmAnimeThemesRoundTrack(session, round);
+    }
+  }
+
   private maybeSkipStalledLoadingRound(session: RoomSession, nowMs: number) {
     if (session.manager.state() !== "loading") return false;
 
@@ -1421,12 +1487,6 @@ export class RoomStore {
     return ids.every((playerId) => session.manager.hasGuessDone(playerId));
   }
 
-  private isLoadingMediaReadyForAll(session: RoomSession) {
-    const ids = this.activePlayerIds(session);
-    if (ids.length <= 0) return false;
-    return ids.every((playerId) => session.manager.hasMediaReady(playerId));
-  }
-
   private isRevealSkipDoneForAll(session: RoomSession) {
     const ids = this.activePlayerIds(session);
     if (ids.length <= 0) return false;
@@ -1435,12 +1495,6 @@ export class RoomStore {
 
   private maybeAdvanceOnUnanimousPhaseCompletion(session: RoomSession, nowMs: number) {
     const state = session.manager.state();
-    if (state === "loading" && this.isLoadingMediaReadyForAll(session)) {
-      if (session.manager.expireCurrentPhase(nowMs)) {
-        this.progressSession(session, nowMs);
-      }
-      return true;
-    }
     if (state === "playing" && this.isGuessPhaseDoneForAll(session)) {
       if (session.manager.expireCurrentPhase(nowMs)) {
         this.progressSession(session, nowMs);
@@ -1456,8 +1510,83 @@ export class RoomStore {
     return false;
   }
 
+  private syncRoundTimeline(session: RoomSession, nowMs: number) {
+    const state = session.manager.state();
+    const currentRound = session.manager.round();
+    const roundContext = { roomCode: session.roomCode, round: currentRound };
+    const currentTrack = currentRound > 0 ? this.trackForRound(session, currentRound) : null;
+    const mediaOffsetSec = roundMediaOffsetSeconds(currentTrack, roundContext);
+
+    if (state === "loading") {
+      if (currentRound <= 0) return;
+      if (session.roundSyncRound !== currentRound) {
+        session.roundSync.prepareRound({
+          nowMs,
+          phaseToken: `${session.roomCode}:${currentRound}:${nowMs}`,
+          playerIds: this.activePlayerIds(session),
+          hostPlayerId: this.ensureHost(session),
+          mediaOffsetSec,
+        });
+        this.warmUpcomingAnimeThemesTracks(session, currentRound);
+        session.roundSyncRound = currentRound;
+      }
+      return;
+    }
+
+    if (state === "playing") {
+      if (currentRound <= 0) return;
+      if (session.roundSyncRound !== currentRound) {
+        session.roundSync.prepareRound({
+          nowMs,
+          phaseToken: `${session.roomCode}:${currentRound}:${nowMs}`,
+          playerIds: this.activePlayerIds(session),
+          hostPlayerId: this.ensureHost(session),
+          mediaOffsetSec,
+        });
+        session.roundSyncRound = currentRound;
+      }
+
+      const snapshot = session.roundSync.snapshot();
+      const startedAtMs = session.manager.startedAtMs() ?? nowMs;
+      session.roundSync.markStarted(snapshot.plannedStartAtMs ?? startedAtMs);
+      return;
+    }
+
+    if (session.roundSyncRound !== null || session.roundSync.snapshot().status !== "idle") {
+      session.roundSync.reset();
+      session.roundSyncRound = null;
+    }
+  }
+
+  private maybeScheduleLoadingRoundStart(session: RoomSession, nowMs: number) {
+    if (session.manager.state() !== "loading") return false;
+    const snapshot = session.roundSync.snapshot();
+    if (snapshot.status !== "preparing") return false;
+    return session.roundSync.maybeScheduleStart(nowMs) !== null;
+  }
+
+  private maybeStartScheduledLoadingRound(session: RoomSession, nowMs: number) {
+    if (session.manager.state() !== "loading") return false;
+    const snapshot = session.roundSync.snapshot();
+    if (snapshot.status !== "scheduled" || snapshot.plannedStartAtMs === null) {
+      return false;
+    }
+    if (nowMs < snapshot.plannedStartAtMs) return false;
+    session.roundSync.markStarted(snapshot.plannedStartAtMs);
+    if (!session.manager.expireCurrentPhase(snapshot.plannedStartAtMs)) {
+      return false;
+    }
+    return true;
+  }
+
   private progressSession(session: RoomSession, nowMs: number) {
+    this.maybeScheduleLoadingRoundStart(session, nowMs);
+    if (this.maybeStartScheduledLoadingRound(session, nowMs)) {
+      // Continue into the regular tick path so the loading phase flips to playing immediately.
+    }
+
     if (this.maybeSkipStalledLoadingRound(session, nowMs)) {
+      this.syncRoundTimeline(session, nowMs);
       return;
     }
 
@@ -1470,11 +1599,13 @@ export class RoomStore {
       leaderboardMs: this.config.leaderboardMs,
     });
 
-    if (tick.closedRounds.length === 0) return;
-
-    for (const closedRound of tick.closedRounds) {
-      this.applyRoundResults(session, closedRound);
+    if (tick.closedRounds.length > 0) {
+      for (const closedRound of tick.closedRounds) {
+        this.applyRoundResults(session, closedRound);
+      }
     }
+
+    this.syncRoundTimeline(session, nowMs);
   }
 
   private applyRoundResults(session: RoomSession, round: ClosedRound) {
@@ -1580,6 +1711,11 @@ export class RoomStore {
       createdAtMs: nowMs,
       isPublic: options.isPublic ?? true,
       manager: new RoomManager(roomCode),
+      roundSync: new RoundSyncCoordinator({
+        startLeadMs: ROUND_SYNC_START_LEAD_MS,
+        maxWaitMs: ROUND_SYNC_MAX_WAIT_MS,
+      }),
+      roundSyncRound: null,
       players: new Map(),
       hostPlayerId: null,
       nextPlayerNumber: 1,
@@ -1992,6 +2128,8 @@ export class RoomStore {
     this.stopPlayersLikedPoolJob(roomCode);
     this.roomLikedPoolRebuildRequested.delete(roomCode);
     session.manager.resetToWaiting();
+    session.roundSync.reset();
+    session.roundSyncRound = null;
     session.trackPool = [];
     session.distractorTrackPool = [];
     session.totalRounds = 0;
@@ -2522,7 +2660,7 @@ export class RoomStore {
     };
   }
 
-  markMediaReady(roomCode: string, playerId: string, trackId: string) {
+  reportMediaPrepared(roomCode: string, playerId: string, trackId: string) {
     const session = this.rooms.get(roomCode);
     if (!session) return { status: "room_not_found" as const };
     if (!session.players.has(playerId)) return { status: "player_not_found" as const };
@@ -2545,9 +2683,9 @@ export class RoomStore {
       };
     }
 
-    const marked = session.manager.markMediaReady(playerId, nowMs);
+    const marked = session.roundSync.markPrepared(playerId, nowMs);
     if (marked.accepted) {
-      this.maybeAdvanceOnUnanimousPhaseCompletion(session, nowMs);
+      this.progressSession(session, nowMs);
     }
 
     return {
@@ -2674,12 +2812,13 @@ export class RoomStore {
         hasAnsweredCurrentRound: state === "playing" ? session.manager.hasGuessDone(entry.playerId) : false,
       }));
     const activePlayerIds = players.map((player) => player.playerId);
+    const roundSync = session.roundSync.snapshot();
     const guessTotalCount = state === "playing" ? activePlayerIds.length : 0;
     const guessDoneCount =
       state === "playing" ? activePlayerIds.filter((playerId) => session.manager.hasGuessDone(playerId)).length : 0;
     const mediaReadyTotalCount = state === "loading" ? activePlayerIds.length : 0;
     const mediaReadyCount =
-      state === "loading" ? activePlayerIds.filter((playerId) => session.manager.hasMediaReady(playerId)).length : 0;
+      state === "loading" ? roundSync.preparedCount : 0;
     const revealSkipTotalCount = state === "reveal" ? activePlayerIds.length : 0;
     const revealSkipCount =
       state === "reveal"
@@ -2787,6 +2926,7 @@ export class RoomStore {
       },
       totalRounds: session.totalRounds,
       deadlineMs: session.manager.deadlineMs(),
+      roundSync,
       guessDoneCount,
       guessTotalCount,
       mediaReadyCount,

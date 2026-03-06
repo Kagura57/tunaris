@@ -57,7 +57,6 @@ export class RoomManager {
   private plannedTotalRounds = 0;
   private answers = new Map<string, RoundAnswer>();
   private drafts = new Map<string, string>();
-  private mediaReadyPlayerIds = new Set<string>();
   private guessedSkipPlayerIds = new Set<string>();
   private revealSkipPlayerIds = new Set<string>();
 
@@ -96,7 +95,6 @@ export class RoomManager {
     this.roundStartedAtMs = null;
     this.answers.clear();
     this.drafts.clear();
-    this.mediaReadyPlayerIds.clear();
     this.guessedSkipPlayerIds.clear();
     this.revealSkipPlayerIds.clear();
     this.plannedTotalRounds = Math.max(0, input.totalRounds);
@@ -121,7 +119,6 @@ export class RoomManager {
 
     this.answers.clear();
     this.drafts.clear();
-    this.mediaReadyPlayerIds.clear();
     this.guessedSkipPlayerIds.clear();
     this.revealSkipPlayerIds.clear();
 
@@ -148,7 +145,6 @@ export class RoomManager {
   forcePlayingRound(round: number, deadlineMs: number, startedAtMs?: number) {
     this.answers.clear();
     this.drafts.clear();
-    this.mediaReadyPlayerIds.clear();
     this.guessedSkipPlayerIds.clear();
     this.revealSkipPlayerIds.clear();
     this.currentRound = Math.max(1, round);
@@ -196,7 +192,6 @@ export class RoomManager {
         this.currentRound = 1;
         this.answers.clear();
         this.drafts.clear();
-        this.mediaReadyPlayerIds.clear();
         this.guessedSkipPlayerIds.clear();
         this.revealSkipPlayerIds.clear();
         if (safeLoadingMs > 0) {
@@ -213,7 +208,6 @@ export class RoomManager {
       }
 
       if (this.gameState === "loading") {
-        this.mediaReadyPlayerIds.clear();
         this.roundStartedAtMs = transitionAtMs;
         this.roundDeadlineMs = transitionAtMs + safeRoundMs;
         this.gameState = "playing";
@@ -231,7 +225,6 @@ export class RoomManager {
         });
         this.answers.clear();
         this.drafts.clear();
-        this.mediaReadyPlayerIds.clear();
         this.guessedSkipPlayerIds.clear();
         this.revealSkipPlayerIds.clear();
         this.roundStartedAtMs = null;
@@ -262,7 +255,6 @@ export class RoomManager {
         this.currentRound += 1;
         this.answers.clear();
         this.drafts.clear();
-        this.mediaReadyPlayerIds.clear();
         this.guessedSkipPlayerIds.clear();
         this.revealSkipPlayerIds.clear();
         if (safeLoadingMs > 0) {
@@ -310,20 +302,6 @@ export class RoomManager {
     }
     this.drafts.set(playerId, trimmed);
     return { accepted: true as const };
-  }
-
-  markMediaReady(playerId: string, nowMs: number) {
-    if (this.gameState !== "loading") return { accepted: false as const };
-    if (this.roundDeadlineMs !== null && nowMs > this.roundDeadlineMs) {
-      return { accepted: false as const };
-    }
-    if (this.mediaReadyPlayerIds.has(playerId)) return { accepted: false as const };
-    this.mediaReadyPlayerIds.add(playerId);
-    return { accepted: true as const };
-  }
-
-  hasMediaReady(playerId: string) {
-    return this.mediaReadyPlayerIds.has(playerId);
   }
 
   hasSubmittedAnswer(playerId: string) {
@@ -376,7 +354,6 @@ export class RoomManager {
     this.plannedTotalRounds = 0;
     this.answers.clear();
     this.drafts.clear();
-    this.mediaReadyPlayerIds.clear();
     this.guessedSkipPlayerIds.clear();
     this.revealSkipPlayerIds.clear();
   }

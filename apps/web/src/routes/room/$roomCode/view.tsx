@@ -3,8 +3,15 @@ import { useQuery } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { toRomaji } from "wanakana";
 import { HttpStatusError, type RoundChoice } from "../../../lib/api";
+import {
+  getEffectiveRoomDeadlineMs,
+  getEffectiveRoomPhase,
+  getEffectiveRoomStartedAtMs,
+  getNextRoomTransitionAtMs,
+} from "../../../lib/liveRoundTiming";
 import { notify } from "../../../lib/notify";
 import { fetchLiveRoomState } from "../../../lib/realtime";
+import { useRoomRealtimeSubscription } from "../../../lib/useRoomRealtimeSubscription";
 
 const ROUND_MS = 20_000;
 const COUNTDOWN_MS = 3_000;
@@ -48,37 +55,6 @@ function projectionPlaybackErrorMessage(provider: string | null) {
     return "Lecture video impossible sur l'ecran de projection.";
   }
   return "Erreur audio sur la piste en cours.";
-}
-
-function stableHash(value: string) {
-  let hash = 2_166_136_261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16_777_619);
-  }
-  return hash >>> 0;
-}
-
-function deterministicIntFromSeed(seed: string, min: number, max: number) {
-  const safeMin = Math.max(0, Math.floor(min));
-  const safeMax = Math.max(safeMin, Math.floor(max));
-  const size = safeMax - safeMin + 1;
-  if (size <= 1) return safeMin;
-  return safeMin + (stableHash(seed) % size);
-}
-
-function computeAnimeStartSec(input: {
-  roomCode: string;
-  round: number;
-  trackId: string;
-  durationSec: number;
-}) {
-  const safeDuration = Math.max(0, Math.floor(input.durationSec));
-  const roundDurationSec = Math.max(1, Math.floor(ROUND_MS / 1000));
-  if (safeDuration <= roundDurationSec) return 0;
-  const maxStart = Math.max(0, safeDuration - roundDurationSec);
-  const seed = `${input.roomCode}:${input.round}:${input.trackId}`;
-  return deterministicIntFromSeed(seed, 0, maxStart);
 }
 
 const WAVE_BARS = Array.from({ length: 64 }, (_, index) => ({
@@ -146,7 +122,6 @@ export function RoomViewPage() {
   const progressStateRef = useRef<{ key: string; value: number }>({ key: "", value: 0 });
   const postRoundProgressRef = useRef<{ key: string; startedAtMs: number } | null>(null);
   const audioRetryTimeoutRef = useRef<number | null>(null);
-  const appliedAnimeStartRef = useRef<string | null>(null);
   const userInteractionUnlockedRef = useRef(false);
   const lastSnapshotErrorToastRef = useRef<string | null>(null);
   const lastPlaybackErrorToastRef = useRef<string | null>(null);
@@ -156,6 +131,7 @@ export function RoomViewPage() {
     return () => window.clearInterval(id);
   }, [serverClockOffsetMs]);
 
+  const realtimeConnected = useRoomRealtimeSubscription(roomCode);
   const snapshotQuery = useQuery({
     queryKey: ["realtime-room-view", roomCode],
     queryFn: async () => {
@@ -167,7 +143,7 @@ export function RoomViewPage() {
         serverNowMs: snapshot.serverNowMs,
       };
     },
-    refetchInterval: 1_000,
+    refetchInterval: realtimeConnected ? false : 1_000,
   });
 
   const state = snapshotQuery.data?.snapshot;
@@ -175,6 +151,33 @@ export function RoomViewPage() {
     if (typeof snapshotQuery.data?.serverNowMs !== "number") return;
     setServerClockOffsetMs(snapshotQuery.data.serverNowMs - Date.now());
   }, [snapshotQuery.data?.serverNowMs]);
+  const effectivePhase = useMemo(
+    () => getEffectiveRoomPhase(state, clockNow),
+    [clockNow, state],
+  );
+  const effectiveDeadlineMs = useMemo(
+    () => getEffectiveRoomDeadlineMs(state, clockNow, ROUND_MS),
+    [clockNow, state],
+  );
+  const effectiveStartedAtMs = useMemo(
+    () => getEffectiveRoomStartedAtMs(state, clockNow, ROUND_MS),
+    [clockNow, state],
+  );
+  const nextTransitionAtMs = useMemo(
+    () => getNextRoomTransitionAtMs(state),
+    [state?.deadlineMs, state?.roundSync?.plannedStartAtMs, state?.state],
+  );
+
+  useEffect(() => {
+    if (nextTransitionAtMs === null) return;
+    const delayMs = Math.max(0, nextTransitionAtMs - (Date.now() + serverClockOffsetMs) + 40);
+    const timeoutId = window.setTimeout(() => {
+      snapshotQuery.refetch().catch(() => undefined);
+    }, delayMs);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [nextTransitionAtMs, serverClockOffsetMs, snapshotQuery.refetch]);
 
   useEffect(() => {
     const error = snapshotQuery.error;
@@ -194,11 +197,11 @@ export function RoomViewPage() {
   }, [roomCode, snapshotQuery.error]);
 
   const remainingMs = useMemo(() => {
-    if (!state?.deadlineMs) return null;
-    return state.deadlineMs - clockNow;
-  }, [clockNow, state?.deadlineMs]);
+    if (!effectiveDeadlineMs) return null;
+    return effectiveDeadlineMs - clockNow;
+  }, [clockNow, effectiveDeadlineMs]);
   const roundMediaKey = `${state?.round ?? 0}:${state?.media?.trackId ?? state?.reveal?.trackId ?? "none"}`;
-  const progressKey = `${state?.state ?? "none"}:${state?.round ?? 0}:${state?.deadlineMs ?? 0}:${state?.media?.trackId ?? state?.reveal?.trackId ?? "none"}`;
+  const progressKey = `${effectivePhase ?? state?.state ?? "none"}:${state?.round ?? 0}:${effectiveDeadlineMs ?? 0}:${state?.media?.trackId ?? state?.reveal?.trackId ?? "none"}`;
 
   useEffect(() => {
     if (!state) {
@@ -229,7 +232,7 @@ export function RoomViewPage() {
     }
 
     postRoundProgressRef.current = null;
-    const rawProgress = phaseProgress(state.state, remainingMs);
+    const rawProgress = phaseProgress(effectivePhase ?? state.state, remainingMs);
     const previous = progressStateRef.current;
     const nextProgress =
       previous.key === progressKey ? Math.max(previous.value, rawProgress) : rawProgress;
@@ -239,7 +242,7 @@ export function RoomViewPage() {
       value: nextProgress,
     };
     setProgress(nextProgress);
-  }, [progressKey, remainingMs, state]);
+  }, [effectivePhase, progressKey, remainingMs, state]);
 
   const youtubePlayback = useMemo(() => {
     if (!state?.media?.embedUrl || !state.media.trackId) return null;
@@ -321,22 +324,33 @@ export function RoomViewPage() {
   const roundLabel = `${state?.round ?? 0}/${state?.totalRounds ?? 0}`;
   const revealArtwork = state?.reveal ? revealArtworkUrl(state.reveal) : null;
 
-  function applyAnimeRandomStart(video: HTMLVideoElement) {
-    if (!state?.media || state.media.provider !== "animethemes") return;
-    const duration = Number.isFinite(video.duration) ? Number(video.duration) : 0;
-    const startSec = computeAnimeStartSec({
-      roomCode,
-      round: state.round,
-      trackId: state.media.trackId,
-      durationSec: duration,
-    });
-    const startKey = `${state.round}:${state.media.trackId}`;
-    if (appliedAnimeStartRef.current === startKey) return;
-    appliedAnimeStartRef.current = startKey;
-    if (startSec <= 0) return;
+  function currentRoundMediaOffsetSec() {
+    return Math.max(0, state?.roundSync?.mediaOffsetSec ?? 0);
+  }
+
+  function timelinePlaybackTargetSec(nowMs: number) {
+    const baseOffsetSec = currentRoundMediaOffsetSec();
+    if (effectivePhase !== "playing" || effectiveStartedAtMs === null) {
+      return baseOffsetSec;
+    }
+    return baseOffsetSec + Math.max(0, nowMs - effectiveStartedAtMs) / 1_000;
+  }
+
+  function syncMediaElementToTimeline(
+    media: HTMLMediaElement | null,
+    nowMs = Date.now() + serverClockOffsetMs,
+  ) {
+    if (!media) return;
+    const rawTargetSec = timelinePlaybackTargetSec(nowMs);
+    const duration =
+      typeof media.duration === "number" && Number.isFinite(media.duration)
+        ? Math.max(0, media.duration)
+        : null;
+    const targetSec =
+      duration === null ? rawTargetSec : Math.min(rawTargetSec, Math.max(0, duration - 0.25));
     try {
-      if (Math.abs(video.currentTime - startSec) > 0.35) {
-        video.currentTime = startSec;
+      if (Math.abs(media.currentTime - targetSec) > 0.45) {
+        media.currentTime = targetSec;
       }
     } catch {
       // Ignore seek errors while the decoder pipeline initializes.
@@ -346,17 +360,16 @@ export function RoomViewPage() {
   function handleAnimeLoadedMetadata() {
     const video = animeVideoRef.current;
     if (!video) return;
-    applyAnimeRandomStart(video);
+    syncMediaElementToTimeline(video);
   }
 
   function handleAnimePlayable() {
     const video = animeVideoRef.current;
     if (!video) return;
-    applyAnimeRandomStart(video);
+    syncMediaElementToTimeline(video);
   }
 
   useEffect(() => {
-    appliedAnimeStartRef.current = null;
     setAudioError(false);
   }, [state?.state, state?.round, state?.media?.trackId]);
 
@@ -366,17 +379,17 @@ export function RoomViewPage() {
 
     if (!activeAnimeVideoSource) {
       video.pause();
-      appliedAnimeStartRef.current = null;
       return;
     }
 
-    appliedAnimeStartRef.current = null;
+    syncMediaElementToTimeline(video);
   }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key]);
 
   useEffect(() => {
     const video = animeVideoRef.current;
     if (!video || !activeAnimeVideoSource) return;
-    if (state?.state === "loading") {
+    syncMediaElementToTimeline(video);
+    if (effectivePhase !== "playing") {
       video.pause();
       return;
     }
@@ -384,7 +397,23 @@ export function RoomViewPage() {
     if (playPromise) {
       playPromise.catch(() => undefined);
     }
-  }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key, state?.state]);
+  }, [activeAnimeVideoSource, effectivePhase, stableAnimeVideoPlayback?.key]);
+
+  useEffect(() => {
+    if (effectivePhase !== "playing" || !activeAnimeVideoSource) return;
+    const intervalId = window.setInterval(() => {
+      syncMediaElementToTimeline(animeVideoRef.current);
+    }, 1_250);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [
+    activeAnimeVideoSource,
+    effectivePhase,
+    effectiveStartedAtMs,
+    serverClockOffsetMs,
+    state?.roundSync?.mediaOffsetSec,
+  ]);
 
   useEffect(() => {
     const activeProvider = state?.media?.provider ?? state?.reveal?.provider ?? null;
@@ -436,6 +465,12 @@ export function RoomViewPage() {
       audio.currentTime = 0;
     }
 
+    syncMediaElementToTimeline(audio);
+    if (effectivePhase !== "playing") {
+      audio.pause();
+      return;
+    }
+
     const playPromise = audio.play();
     if (playPromise) {
       playPromise.catch(() => {
@@ -448,20 +483,20 @@ export function RoomViewPage() {
         }, 320);
       });
     }
-  }, [activeAnimeVideoSource, activeYoutubeEmbed, state?.previewUrl, state?.state]);
+  }, [activeAnimeVideoSource, activeYoutubeEmbed, effectivePhase, state?.previewUrl]);
 
   useEffect(() => {
     function unlockAudioPlayback() {
       const shouldKickIframe = Boolean(activeYoutubeEmbed) && !userInteractionUnlockedRef.current;
       userInteractionUnlockedRef.current = true;
-      const canAutoPlayAnime = state?.state !== "loading";
+      const canAutoPlayMedia = effectivePhase === "playing";
 
       const audio = audioRef.current;
-      if (audio && audio.src) {
+      if (audio && audio.src && canAutoPlayMedia) {
         audio.play().catch(() => undefined);
       }
       const video = animeVideoRef.current;
-      if (video && activeAnimeVideoSource && canAutoPlayAnime) {
+      if (video && activeAnimeVideoSource && canAutoPlayMedia) {
         video.play().catch(() => undefined);
       }
       if (shouldKickIframe) {
@@ -475,7 +510,7 @@ export function RoomViewPage() {
       window.removeEventListener("pointerdown", unlockAudioPlayback);
       window.removeEventListener("keydown", unlockAudioPlayback);
     };
-  }, [activeAnimeVideoSource, activeYoutubeEmbed, state?.state]);
+  }, [activeAnimeVideoSource, activeYoutubeEmbed, effectivePhase]);
 
   useEffect(() => {
     return () => {
@@ -541,7 +576,7 @@ export function RoomViewPage() {
               <span style={{ width: `${(progress * 100).toFixed(3)}%` }} />
             </div>
           </div>
-          {state?.state === "loading" && usingAnimeVideoPlayback && (
+          {effectivePhase === "loading" && usingAnimeVideoPlayback && (
             <div className="media-loading-overlay" role="status" aria-live="polite">
               <span className="resolving-tracks-spinner" aria-hidden="true" />
               <p>Chargement de la video...</p>
@@ -553,7 +588,7 @@ export function RoomViewPage() {
           )}
         </div>
 
-        {state?.state === "playing" && state.mode === "mcq" && state.choices && (
+        {effectivePhase === "playing" && state.mode === "mcq" && state.choices && (
           <div className="projection-choices">
             {state.choices.map((choice, index) => (
               <div key={`${choice.value}-${index}`} className="projection-choice">
@@ -563,7 +598,7 @@ export function RoomViewPage() {
           </div>
         )}
 
-        {state?.state === "playing" && state.mode === "text" && (
+        {effectivePhase === "playing" && state.mode === "text" && (
           <p className="projection-hint">Mode texte: trouver titre ou artiste</p>
         )}
 
