@@ -1,7 +1,9 @@
 import { MouseEvent, useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
+import { Toaster } from "sonner";
 import { getAuthSession, leaveRoom as leaveRoomApi, signOutAccount } from "../lib/api";
+import { notify } from "../lib/notify";
 import { useGameStore } from "../stores/gameStore";
 
 export function RootLayout() {
@@ -33,6 +35,12 @@ export function RootLayout() {
       await queryClient.invalidateQueries({ queryKey: ["auth-session"] });
       await queryClient.invalidateQueries({ queryKey: ["anilist-link-status"] });
       await queryClient.invalidateQueries({ queryKey: ["anilist-sync-status"] });
+      notify.success("Déconnexion effectuée.");
+    },
+    onError: () => {
+      notify.error("Déconnexion impossible pour le moment.", {
+        key: "auth:signout:error",
+      });
     },
   });
 
@@ -92,30 +100,28 @@ export function RootLayout() {
     });
   }, [authSessionQuery.data, authSessionQuery.isSuccess, clearAccount, setAccount]);
 
-  if (isRoomRoute) {
-    return (
-      <main className="game-shell">
-        <header className="room-topbar">
-          <Link className="brand" to="/" onClick={onRoomHomeClick}>
-            <img className="brand-lockup" src="/logo.svg" alt="Kwizik" />
-          </Link>
-          <Link className="ghost-btn" to="/" onClick={onRoomHomeClick}>
-            Accueil
-          </Link>
-        </header>
-        <Outlet />
-      </main>
-    );
-  }
-
-  return (
+  const shell = isRoomRoute ? (
+    <main className="game-shell">
+      <header className="room-topbar">
+        <Link className="brand" to="/" onClick={onRoomHomeClick}>
+          <img className="brand-lockup" src="/logo.svg" alt="Kwizik" />
+        </Link>
+        <Link className="ghost-btn" to="/" onClick={onRoomHomeClick}>
+          Accueil
+        </Link>
+      </header>
+      <Outlet />
+    </main>
+  ) : (
     <main className="app-shell">
       <header className="topbar">
         <Link className="brand" to="/">
           <img className="brand-lockup" src="/logo.svg" alt="Kwizik" />
         </Link>
         <p className="brand-subtitle">Live Blindtest Arena</p>
-        <p className="topbar-meta">Crée une room, rejoins en un code, et lance la partie en direct.</p>
+        <p className="topbar-meta">
+          Crée une room, rejoins en un code, et lance la partie en direct.
+        </p>
         <nav className="topbar-nav">
           <Link className="ghost-btn" to="/">
             Accueil
@@ -143,5 +149,38 @@ export function RootLayout() {
       </header>
       <Outlet />
     </main>
+  );
+
+  return (
+    <>
+      <Toaster
+        className="kwizik-toaster"
+        position="top-right"
+        closeButton
+        visibleToasts={4}
+        expand={false}
+        gap={10}
+        offset={20}
+        mobileOffset={16}
+        containerAriaLabel="Notifications"
+        toastOptions={{
+          classNames: {
+            toast: "kwizik-toast",
+            content: "kwizik-toast-content",
+            title: "kwizik-toast-title",
+            description: "kwizik-toast-description",
+            closeButton: "kwizik-toast-close",
+            actionButton: "kwizik-toast-action",
+            cancelButton: "kwizik-toast-cancel",
+            success: "kwizik-toast-success",
+            error: "kwizik-toast-error",
+            info: "kwizik-toast-info",
+            loading: "kwizik-toast-loading",
+            default: "kwizik-toast-default",
+          },
+        }}
+      />
+      {shell}
+    </>
   );
 }

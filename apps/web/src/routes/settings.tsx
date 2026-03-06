@@ -14,6 +14,7 @@ import {
   updateAccountTitlePreference,
   updateAniListUsername,
 } from "../lib/api";
+import { notify } from "../lib/notify";
 import { useGameStore } from "../stores/gameStore";
 
 type AniListLinkStatus = "linked" | "not_linked";
@@ -151,7 +152,12 @@ export function SettingsPage() {
     setAccount({
       titlePreference: titlePreferenceQuery.data.titlePreference,
     });
-  }, [sessionQuery.data?.user, setAccount, titlePreferenceQuery.data?.titlePreference, titlePreferenceQuery.isSuccess]);
+  }, [
+    sessionQuery.data?.user,
+    setAccount,
+    titlePreferenceQuery.data?.titlePreference,
+    titlePreferenceQuery.isSuccess,
+  ]);
 
   useEffect(() => {
     if (usernameDirty) return;
@@ -178,6 +184,18 @@ export function SettingsPage() {
       await anilistSyncStatusQuery.refetch();
       await anilistRecoveredLibraryQuery.refetch();
     },
+    onSuccess: (result) => {
+      notify.success(
+        result.queued
+          ? "Pseudo mis à jour et synchronisation AniList lancée."
+          : "Pseudo AniList mis à jour.",
+      );
+    },
+    onError: (error) => {
+      notify.error(updateMutationErrorMessage(error), {
+        key: "settings:anilist:update:error",
+      });
+    },
   });
 
   const updateTitlePreferenceMutation = useMutation({
@@ -188,6 +206,12 @@ export function SettingsPage() {
     onSuccess: (payload) => {
       setAccount({
         titlePreference: payload.titlePreference,
+      });
+      notify.success("Préférence de titre mise à jour.");
+    },
+    onError: () => {
+      notify.error("Impossible de mettre a jour la preference de titre.", {
+        key: "settings:title-preference:error",
       });
     },
     onSettled: async () => {
@@ -203,7 +227,13 @@ export function SettingsPage() {
       await queryClient.invalidateQueries({ queryKey: ["anilist-link-status"] });
       await queryClient.invalidateQueries({ queryKey: ["anilist-sync-status"] });
       await queryClient.invalidateQueries({ queryKey: ["account-title-preference"] });
+      notify.success("Déconnexion effectuée.");
       navigate({ to: "/" });
+    },
+    onError: () => {
+      notify.error("Deconnexion impossible pour le moment.", {
+        key: "settings:signout:error",
+      });
     },
   });
 
@@ -216,6 +246,20 @@ export function SettingsPage() {
   const recoveredAnimeItems = anilistRecoveredLibraryQuery.data?.items ?? [];
   const recoveredAnimeCount = anilistRecoveredLibraryQuery.data?.total ?? 0;
   const titlePreference = titlePreferenceQuery.data?.titlePreference ?? "mixed";
+
+  useEffect(() => {
+    if (!anilistRecoveredLibraryQuery.isError) return;
+    notify.error("Impossible de charger la bibliotheque anime.", {
+      key: "settings:anilist-library:error",
+    });
+  }, [anilistRecoveredLibraryQuery.isError]);
+
+  useEffect(() => {
+    if (activeRun?.status !== "error") return;
+    notify.error(syncErrorMessage(activeRun.message), {
+      key: `settings:anilist-sync-run:error:${activeRun.runId ?? activeRun.createdAtMs ?? "latest"}`,
+    });
+  }, [activeRun?.createdAtMs, activeRun?.message, activeRun?.runId, activeRun?.status]);
 
   return (
     <section className="single-panel">
@@ -253,7 +297,9 @@ export function SettingsPage() {
                   <p className="kicker">AniList</p>
                   <h3>Pseudo AniList</h3>
                 </div>
-                <span className={`provider-badge ${linkStatusMeta.tone}`}>{linkStatusMeta.label}</span>
+                <span className={`provider-badge ${linkStatusMeta.tone}`}>
+                  {linkStatusMeta.label}
+                </span>
               </div>
               <p className="status">{linkStatusMeta.description}</p>
               <label>
@@ -293,11 +339,13 @@ export function SettingsPage() {
               </div>
               <p className="status">Choisis le format affiche pour les choix QCM anime.</p>
               <div className="waiting-actions">
-                {([
-                  { value: "mixed", label: "Mixte" },
-                  { value: "romaji", label: "Romaji" },
-                  { value: "english", label: "Anglais" },
-                ] as Array<{ value: TitlePreference; label: string }>).map((entry) => (
+                {(
+                  [
+                    { value: "mixed", label: "Mixte" },
+                    { value: "romaji", label: "Romaji" },
+                    { value: "english", label: "Anglais" },
+                  ] as Array<{ value: TitlePreference; label: string }>
+                ).map((entry) => (
                   <button
                     key={entry.value}
                     className={titlePreference === entry.value ? "solid-btn" : "ghost-btn"}
@@ -319,14 +367,21 @@ export function SettingsPage() {
                   <p className="kicker">AniList</p>
                   <h3>Etat synchronisation</h3>
                 </div>
-                <span className={`provider-badge ${runStatus === "error" ? "expired" : "connected"}`}>
+                <span
+                  className={`provider-badge ${runStatus === "error" ? "expired" : "connected"}`}
+                >
                   {syncStatusLabel(runStatus)}
                 </span>
               </div>
               <p className="status">
-                Progression: <strong>{typeof activeRun?.progress === "number" ? `${activeRun.progress}%` : "0%"}</strong>
+                Progression:{" "}
+                <strong>
+                  {typeof activeRun?.progress === "number" ? `${activeRun.progress}%` : "0%"}
+                </strong>
               </p>
-              <p className="status">Derniere execution: {formatSyncTimestamp(activeRun?.createdAtMs ?? null)}</p>
+              <p className="status">
+                Derniere execution: {formatSyncTimestamp(activeRun?.createdAtMs ?? null)}
+              </p>
             </div>
 
             <div className="provider-link-card">
@@ -335,11 +390,15 @@ export function SettingsPage() {
                   <p className="kicker">AniList</p>
                   <h3>Animes recuperes</h3>
                 </div>
-                <span className={`provider-badge ${recoveredAnimeCount > 0 ? "connected" : "idle"}`}>
+                <span
+                  className={`provider-badge ${recoveredAnimeCount > 0 ? "connected" : "idle"}`}
+                >
                   {recoveredAnimeCount}
                 </span>
               </div>
-              <p className="status">Titres presents dans la bibliotheque synchronisee locale (watching + completed).</p>
+              <p className="status">
+                Titres presents dans la bibliotheque synchronisee locale (watching + completed).
+              </p>
 
               {anilistRecoveredLibraryQuery.isPending && (
                 <p className="status">Chargement de la bibliotheque anime...</p>
@@ -351,14 +410,18 @@ export function SettingsPage() {
 
               {!anilistRecoveredLibraryQuery.isPending && recoveredAnimeItems.length <= 0 && (
                 <p className="status">
-                  Aucun anime trouve pour le moment. Lance une synchronisation puis recharge cette page.
+                  Aucun anime trouve pour le moment. Lance une synchronisation puis recharge cette
+                  page.
                 </p>
               )}
 
               {recoveredAnimeItems.length > 0 && (
                 <ul className="anilist-library-list">
                   {recoveredAnimeItems.map((entry) => (
-                    <li key={`${entry.animeId}:${entry.listStatus}`} className="anilist-library-item">
+                    <li
+                      key={`${entry.animeId}:${entry.listStatus}`}
+                      className="anilist-library-item"
+                    >
                       <strong>{entry.title}</strong>
                       <span
                         className={`anilist-library-status${
@@ -388,22 +451,6 @@ export function SettingsPage() {
             </div>
           </div>
         )}
-
-        <p
-          className={
-            updateAndSyncMutation.isError ||
-            updateTitlePreferenceMutation.isError ||
-            signOutMutation.isError ||
-            activeRun?.status === "error"
-              ? "status error"
-              : "status"
-          }
-        >
-          {updateAndSyncMutation.isError && updateMutationErrorMessage(updateAndSyncMutation.error)}
-          {updateTitlePreferenceMutation.isError && "Impossible de mettre a jour la preference de titre."}
-          {signOutMutation.isError && "Deconnexion impossible pour le moment."}
-          {!updateAndSyncMutation.isError && activeRun?.status === "error" && syncErrorMessage(activeRun.message)}
-        </p>
       </article>
     </section>
   );

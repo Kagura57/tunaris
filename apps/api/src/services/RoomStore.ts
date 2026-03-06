@@ -11,6 +11,7 @@ import { getRomanizedJapaneseCached, scheduleRomanizeJapanese } from "./Japanese
 import { SPOTIFY_RATE_LIMITED_ERROR, spotifyPlaylistRateLimitRetryAfterMs } from "../routes/music/spotify";
 import { fetchUserLikedTracksForProviders as fetchSyncedUserLikedTracksForProviders } from "./UserMusicLibrary";
 import { pool } from "../db/client";
+import { readEnvVar } from "../lib/env";
 import { userAnimeLibraryRepository } from "../repositories/UserAnimeLibraryRepository";
 import { userLikedTrackRepository } from "../repositories/UserLikedTrackRepository";
 import { normalizeAnimeText } from "./AnimeTextNormalization";
@@ -147,9 +148,32 @@ const MCQ_REQUIRED_CHOICES = 4;
 const START_POOL_RETRY_ATTEMPTS = 3;
 const START_POOL_RETRY_DELAY_MS = 900;
 const PLAYERS_LIKED_POOL_BUILD_TIMEOUT_MS = 45_000;
+const ANIMETHEMES_EXTREME_TIMEOUT_MS = 90_000;
 const ROOM_ANSWER_SUGGESTION_LIMIT = 1_000;
 const ROOM_BULK_ANSWER_TRACK_LIMIT = 16_000;
 const ROOM_BULK_ANSWER_SUGGESTION_LIMIT = 24_000;
+
+function readApiBaseUrl() {
+  const fromBetterAuth = readEnvVar("BETTER_AUTH_URL")?.trim() ?? "";
+  if (fromBetterAuth.length > 0) {
+    return fromBetterAuth.replace(/\/+$/, "");
+  }
+
+  const fromRailwayDomain = readEnvVar("RAILWAY_PUBLIC_DOMAIN")?.trim() ?? "";
+  if (fromRailwayDomain.length > 0) {
+    const withProtocol =
+      fromRailwayDomain.startsWith("http://") || fromRailwayDomain.startsWith("https://")
+        ? fromRailwayDomain
+        : `https://${fromRailwayDomain}`;
+    return withProtocol.replace(/\/+$/, "");
+  }
+
+  return "http://127.0.0.1:3001";
+}
+
+function animethemesProxyUrl(videoKey: string) {
+  return `${readApiBaseUrl()}/quiz/media/animethemes/${encodeURIComponent(videoKey)}`;
+}
 
 type RoundConfig = typeof DEFAULT_ROUND_CONFIG;
 
@@ -1046,7 +1070,7 @@ export class RoomStore {
             .filter((value) => value.length > 0),
         ),
       );
-      const sourceUrl = row.webm_url;
+      const proxyUrl = animethemesProxyUrl(row.video_key);
       return {
         provider: "animethemes",
         id: row.video_key,
@@ -1054,10 +1078,10 @@ export class RoomStore {
         artist: themeLabel.length > 0 ? themeLabel : row.theme_type,
         songTitle: row.song_title,
         songArtists: row.song_artists ?? [],
-        previewUrl: sourceUrl,
-        sourceUrl,
-        audioUrl: sourceUrl,
-        videoUrl: row.webm_url,
+        previewUrl: proxyUrl,
+        sourceUrl: proxyUrl,
+        audioUrl: proxyUrl,
+        videoUrl: proxyUrl,
         answer: {
           canonical: row.title_romaji,
           englishTitle: row.title_english,
@@ -1352,12 +1376,11 @@ export class RoomStore {
 
   private loadingTimeoutMsForCurrentRound(session: RoomSession) {
     const configured = Math.max(this.config.loadingMs, this.config.loadingTimeoutMs);
-    if (configured <= 0) return 0;
     const round = session.manager.round();
     if (round <= 0) return 0;
     const track = this.trackForRound(session, round);
     if (!track || track.provider !== "animethemes") return 0;
-    return configured;
+    return Math.max(configured, ANIMETHEMES_EXTREME_TIMEOUT_MS);
   }
 
   private maybeSkipStalledLoadingRound(session: RoomSession, nowMs: number) {

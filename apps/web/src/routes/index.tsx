@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { toRomaji } from "wanakana";
 import { createRoom, getPublicRooms, joinRoom } from "../lib/api";
+import { notify } from "../lib/notify";
 import { useGameStore } from "../stores/gameStore";
 
 function withRomajiLabel(value: string) {
@@ -10,6 +11,14 @@ function withRomajiLabel(value: string) {
   const romaji = toRomaji(value).trim();
   if (!romaji || romaji.toLowerCase() === value.toLowerCase()) return value;
   return romaji;
+}
+
+function joinErrorMessage(error: unknown) {
+  if (!(error instanceof Error)) return "Impossible de rejoindre cette room.";
+  if (error.message === "ROOM_NOT_JOINABLE") {
+    return "La room est terminée et n’accepte plus de nouveaux joueurs.";
+  }
+  return "Impossible de rejoindre cette room.";
 }
 
 export function HomePage() {
@@ -45,6 +54,7 @@ export function HomePage() {
       };
     },
     onSuccess: (result) => {
+      notify.success("Room créée.");
       setSession({
         roomCode: result.roomCode,
         playerId: result.playerId,
@@ -54,6 +64,11 @@ export function HomePage() {
       navigate({
         to: "/room/$roomCode/play",
         params: { roomCode: result.roomCode },
+      });
+    },
+    onError: () => {
+      notify.error("Impossible de créer la room.", {
+        key: "room:create:error",
       });
     },
   });
@@ -66,7 +81,10 @@ export function HomePage() {
       }),
     onSuccess: (result, input) => {
       const normalizedCode = input.roomCode.trim().toUpperCase();
-      const knownRoom = (publicRoomsQuery.data?.rooms ?? []).find((room) => room.roomCode === normalizedCode);
+      const knownRoom = (publicRoomsQuery.data?.rooms ?? []).find(
+        (room) => room.roomCode === normalizedCode,
+      );
+      notify.success("Room rejointe.");
       setSession({
         roomCode: normalizedCode,
         playerId: result.playerId,
@@ -79,8 +97,12 @@ export function HomePage() {
         params: { roomCode: normalizedCode },
       });
     },
+    onError: (error) => {
+      notify.error(joinErrorMessage(error), {
+        key: "room:join:error",
+      });
+    },
   });
-  const joinErrorCode = joinMutation.error instanceof Error ? joinMutation.error.message : null;
 
   useEffect(() => {
     const suggestedName = account.name?.trim() ?? "";
@@ -115,7 +137,10 @@ export function HomePage() {
         : "";
 
     if (!displayName) {
-      const prompted = window.prompt("Choisis un pseudo pour rejoindre cette room", suggestedFromInputs || "Player One");
+      const prompted = window.prompt(
+        "Choisis un pseudo pour rejoindre cette room",
+        suggestedFromInputs || "Player One",
+      );
       if (!prompted || prompted.trim().length <= 0) return;
       displayName = prompted.trim();
       setJoinDisplayName(displayName);
@@ -132,103 +157,102 @@ export function HomePage() {
   return (
     <>
       <section className="home-grid home-grid-balanced home-top-grid">
-      <article className="panel-card">
-        <h2 className="panel-title">Rejoindre une room</h2>
-        <p className="panel-copy">Le premier joueur de la room devient host du lobby.</p>
+        <article className="panel-card">
+          <h2 className="panel-title">Rejoindre une room</h2>
+          <p className="panel-copy">Le premier joueur de la room devient host du lobby.</p>
 
-        <form className="panel-form" onSubmit={onJoin}>
-          <label>
-            <span>Code room</span>
-            <input
-              value={joinRoomCode}
-              onChange={(event) => setJoinRoomCode(event.currentTarget.value)}
-              maxLength={6}
-              placeholder="ABC123"
-            />
-          </label>
+          <form className="panel-form" onSubmit={onJoin}>
+            <label>
+              <span>Code room</span>
+              <input
+                value={joinRoomCode}
+                onChange={(event) => setJoinRoomCode(event.currentTarget.value)}
+                maxLength={6}
+                placeholder="ABC123"
+              />
+            </label>
 
-          <label>
-            <span>Pseudo</span>
-            <input
-              value={joinDisplayName}
-              onChange={(event) => setJoinDisplayName(event.currentTarget.value)}
-              maxLength={24}
-              placeholder="Ton pseudo"
-            />
-          </label>
+            <label>
+              <span>Pseudo</span>
+              <input
+                value={joinDisplayName}
+                onChange={(event) => setJoinDisplayName(event.currentTarget.value)}
+                maxLength={24}
+                placeholder="Ton pseudo"
+              />
+            </label>
 
-          <button className="solid-btn" type="submit" disabled={joinMutation.isPending || createRoomMutation.isPending}>
-            {joinMutation.isPending ? "Connexion..." : "Entrer dans la room"}
-          </button>
-        </form>
+            <button
+              className="solid-btn"
+              type="submit"
+              disabled={joinMutation.isPending || createRoomMutation.isPending}
+            >
+              {joinMutation.isPending ? "Connexion..." : "Entrer dans la room"}
+            </button>
+          </form>
+        </article>
 
-        <p className={joinMutation.isError ? "status error" : "status"}>
-          {joinErrorCode === "ROOM_NOT_JOINABLE" && "La room est terminée et n’accepte plus de nouveaux joueurs."}
-          {joinMutation.isError && joinErrorCode !== "ROOM_NOT_JOINABLE" && "Impossible de rejoindre cette room."}
-        </p>
-      </article>
-
-      <article className="panel-card">
-        <h2 className="panel-title">Créer une room</h2>
-        <p className="panel-copy">Crée un lobby en un clic, choisis la visibilité, puis lance la partie.</p>
-        {!account.userId && (
-          <p className="status">
-            Astuce: connecte-toi puis renseigne ton pseudo AniList dans Settings pour synchroniser ta liste anime.
+        <article className="panel-card">
+          <h2 className="panel-title">Créer une room</h2>
+          <p className="panel-copy">
+            Crée un lobby en un clic, choisis la visibilité, puis lance la partie.
           </p>
-        )}
+          {!account.userId && (
+            <p className="status">
+              Astuce: connecte-toi puis renseigne ton pseudo AniList dans Settings pour synchroniser
+              ta liste anime.
+            </p>
+          )}
 
-        <div className="panel-form">
-          <label>
-            <span>Pseudo</span>
-            <input
-              value={createDisplayName}
-              onChange={(event) => setCreateDisplayName(event.currentTarget.value)}
-              maxLength={24}
-              placeholder="Ton pseudo"
-            />
-          </label>
+          <div className="panel-form">
+            <label>
+              <span>Pseudo</span>
+              <input
+                value={createDisplayName}
+                onChange={(event) => setCreateDisplayName(event.currentTarget.value)}
+                maxLength={24}
+                placeholder="Ton pseudo"
+              />
+            </label>
 
-          <div className="field-block">
-            <span className="field-label">Visibilité</span>
-            <div className="source-preset-grid">
-              <button
-                type="button"
-                className={`source-preset-btn${isPublicRoom ? " active" : ""}`}
-                onClick={() => setIsPublicRoom(true)}
-              >
-                <strong>Partie publique</strong>
-                <span>Visible dans la liste publique</span>
-              </button>
-              <button
-                type="button"
-                className={`source-preset-btn${!isPublicRoom ? " active" : ""}`}
-                onClick={() => setIsPublicRoom(false)}
-              >
-                <strong>Partie privée</strong>
-                <span>Accessible avec le code room</span>
-              </button>
+            <div className="field-block">
+              <span className="field-label">Visibilité</span>
+              <div className="source-preset-grid">
+                <button
+                  type="button"
+                  className={`source-preset-btn${isPublicRoom ? " active" : ""}`}
+                  onClick={() => setIsPublicRoom(true)}
+                >
+                  <strong>Partie publique</strong>
+                  <span>Visible dans la liste publique</span>
+                </button>
+                <button
+                  type="button"
+                  className={`source-preset-btn${!isPublicRoom ? " active" : ""}`}
+                  onClick={() => setIsPublicRoom(false)}
+                >
+                  <strong>Partie privée</strong>
+                  <span>Accessible avec le code room</span>
+                </button>
+              </div>
             </div>
+
+            <p className="status">
+              Le host configure le mode AniList et les themes, puis lance quand tout le monde est
+              pret.
+            </p>
+
+            <button
+              id="create-room"
+              className="solid-btn"
+              type="button"
+              onClick={onCreate}
+              disabled={createRoomMutation.isPending || joinMutation.isPending}
+            >
+              {createRoomMutation.isPending ? "Création..." : "Créer une room"}
+            </button>
           </div>
-
-          <p className="status">
-            Le host configure le mode AniList et les themes, puis lance quand tout le monde est pret.
-          </p>
-
-          <button
-            id="create-room"
-            className="solid-btn"
-            type="button"
-            onClick={onCreate}
-            disabled={createRoomMutation.isPending || joinMutation.isPending}
-          >
-            {createRoomMutation.isPending ? "Création..." : "Créer une room"}
-          </button>
-        </div>
-
-        <p className={createRoomMutation.isError ? "status error" : "status"}>
-          {createRoomMutation.isError && "Impossible de créer la room."}
-        </p>
-      </article>
+        </article>
       </section>
       <section className="single-panel">
         {(publicRoomsQuery.data?.rooms ?? []).length > 0 && (

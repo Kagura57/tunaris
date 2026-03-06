@@ -2,6 +2,7 @@ import { FormEvent, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { HttpStatusError, signInWithEmail, signUpWithEmail } from "../lib/api";
+import { notify } from "../lib/notify";
 import { useGameStore } from "../stores/gameStore";
 
 type AuthMode = "signin" | "signup";
@@ -11,7 +12,10 @@ function authErrorMessage(error: unknown, mode: AuthMode) {
     if (error.message === "Invalid email or password" || error.status === 401) {
       return "Email ou mot de passe invalide.";
     }
-    if (error.message === "User already exists" || error.message === "User already exists. Use another email") {
+    if (
+      error.message === "User already exists" ||
+      error.message === "User already exists. Use another email"
+    ) {
       return "Un compte existe déjà avec cet email.";
     }
     if (error.message === "Password too short") {
@@ -78,6 +82,11 @@ export function AuthPage() {
       await queryClient.invalidateQueries({ queryKey: ["auth-session"] });
       window.location.assign(redirectTarget);
     },
+    onError: (error) => {
+      notify.error(authErrorMessage(error, mode), {
+        key: `auth:${mode}:error`,
+      });
+    },
   });
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -98,7 +107,9 @@ export function AuthPage() {
 
         {account.userId ? (
           <div className="panel-form">
-            <p className="status">Connecté en tant que {account.name ?? account.email ?? "Utilisateur"}.</p>
+            <p className="status">
+              Connecté en tant que {account.name ?? account.email ?? "Utilisateur"}.
+            </p>
             <div className="waiting-actions">
               <Link className="solid-btn" to="/settings">
                 Ouvrir mes paramètres
@@ -186,10 +197,6 @@ export function AuthPage() {
                     : "Créer mon compte"}
               </button>
             </form>
-
-            <p className={authMutation.isError ? "status error" : "status"}>
-              {authMutation.isError ? authErrorMessage(authMutation.error, mode) : ""}
-            </p>
           </>
         )}
       </article>

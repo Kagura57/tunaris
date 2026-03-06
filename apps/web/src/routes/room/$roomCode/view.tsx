@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { toRomaji } from "wanakana";
-import type { RoundChoice } from "../../../lib/api";
+import { HttpStatusError, type RoundChoice } from "../../../lib/api";
+import { notify } from "../../../lib/notify";
 import { fetchLiveRoomState } from "../../../lib/realtime";
 
 const ROUND_MS = 20_000;
@@ -27,6 +28,28 @@ function phaseProgress(phase: string | undefined, remainingMs: number | null) {
   return 0;
 }
 
+function errorCode(error: unknown) {
+  return error instanceof Error ? error.message : null;
+}
+
+function projectionSnapshotErrorMessage(error: unknown) {
+  if (
+    error instanceof HttpStatusError &&
+    error.status === 404 &&
+    error.message === "ROOM_NOT_FOUND"
+  ) {
+    return "La room de projection n'est plus disponible.";
+  }
+  return "Synchronisation de la projection impossible.";
+}
+
+function projectionPlaybackErrorMessage(provider: string | null) {
+  if (provider === "youtube" || provider === "animethemes") {
+    return "Lecture video impossible sur l'ecran de projection.";
+  }
+  return "Erreur audio sur la piste en cours.";
+}
+
 function stableHash(value: string) {
   let hash = 2_166_136_261;
   for (let index = 0; index < value.length; index += 1) {
@@ -44,7 +67,12 @@ function deterministicIntFromSeed(seed: string, min: number, max: number) {
   return safeMin + (stableHash(seed) % size);
 }
 
-function computeAnimeStartSec(input: { roomCode: string; round: number; trackId: string; durationSec: number }) {
+function computeAnimeStartSec(input: {
+  roomCode: string;
+  round: number;
+  trackId: string;
+  durationSec: number;
+}) {
   const safeDuration = Math.max(0, Math.floor(input.durationSec));
   const roundDurationSec = Math.max(1, Math.floor(ROUND_MS / 1000));
   if (safeDuration <= roundDurationSec) return 0;
@@ -59,7 +87,10 @@ const WAVE_BARS = Array.from({ length: 64 }, (_, index) => ({
   delaySec: (index % 10) * 0.07,
 }));
 
-function revealArtworkUrl(reveal: { provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube"; trackId: string }) {
+function revealArtworkUrl(reveal: {
+  provider: "spotify" | "deezer" | "apple-music" | "tidal" | "youtube";
+  trackId: string;
+}) {
   if (reveal.provider === "youtube") {
     return `https://i.ytimg.com/vi/${reveal.trackId}/hqdefault.jpg`;
   }
@@ -88,7 +119,8 @@ function formatProjectionChoiceLabel(choice: RoundChoice) {
   const romajiTitle = withRomajiLabel(choice.titleRomaji);
   const englishTitle = choice.titleEnglish?.trim() ?? "";
   const hasDistinctEnglish =
-    englishTitle.length > 0 && normalizeChoiceLabel(englishTitle) !== normalizeChoiceLabel(choice.titleRomaji);
+    englishTitle.length > 0 &&
+    normalizeChoiceLabel(englishTitle) !== normalizeChoiceLabel(choice.titleRomaji);
   const title = hasDistinctEnglish ? `${romajiTitle} (${englishTitle})` : romajiTitle;
   return `${title} - ${choice.themeLabel}`;
 }
@@ -117,6 +149,8 @@ export function RoomViewPage() {
   const audioRetryTimeoutRef = useRef<number | null>(null);
   const appliedAnimeStartRef = useRef<string | null>(null);
   const userInteractionUnlockedRef = useRef(false);
+  const lastSnapshotErrorToastRef = useRef<string | null>(null);
+  const lastPlaybackErrorToastRef = useRef<string | null>(null);
 
   useEffect(() => {
     const id = window.setInterval(() => setClockNow(Date.now() + serverClockOffsetMs), 80);
@@ -142,6 +176,23 @@ export function RoomViewPage() {
     if (typeof snapshotQuery.data?.serverNowMs !== "number") return;
     setServerClockOffsetMs(snapshotQuery.data.serverNowMs - Date.now());
   }, [snapshotQuery.data?.serverNowMs]);
+
+  useEffect(() => {
+    const error = snapshotQuery.error;
+    if (!error) {
+      lastSnapshotErrorToastRef.current = null;
+      return;
+    }
+    const signature =
+      error instanceof HttpStatusError
+        ? `${error.status}:${error.message}`
+        : (errorCode(error) ?? "UNKNOWN_ERROR");
+    if (lastSnapshotErrorToastRef.current === signature) return;
+    lastSnapshotErrorToastRef.current = signature;
+    notify.error(projectionSnapshotErrorMessage(error), {
+      key: `room-view:snapshot:${roomCode}:${signature}`,
+    });
+  }, [roomCode, snapshotQuery.error]);
 
   const remainingMs = useMemo(() => {
     if (!state?.deadlineMs) return null;
@@ -238,9 +289,7 @@ export function RoomViewPage() {
     }
 
     const shouldClear =
-      state?.state === "waiting" ||
-      state?.state === "results" ||
-      state?.state === undefined;
+      state?.state === "waiting" || state?.state === "results" || state?.state === undefined;
     if (shouldClear) {
       setStableAnimeVideoPlayback(null);
     }
@@ -255,7 +304,8 @@ export function RoomViewPage() {
   const revealVideoActive =
     (usingYouTubePlayback || usingAnimeVideoPlayback) &&
     (state?.state === "reveal" || state?.state === "leaderboard");
-  const showRevealAnswersInLeaderboard = state?.state === "reveal" || state?.state === "leaderboard";
+  const showRevealAnswersInLeaderboard =
+    state?.state === "reveal" || state?.state === "leaderboard";
   const revealAnswerByPlayerId = useMemo(() => {
     const map = new Map<
       string,
@@ -310,6 +360,7 @@ export function RoomViewPage() {
 
   useEffect(() => {
     appliedAnimeStartRef.current = null;
+    setAudioError(false);
   }, [state?.state, state?.round, state?.media?.trackId]);
 
   useEffect(() => {
@@ -371,12 +422,31 @@ export function RoomViewPage() {
 
   useEffect(() => {
     return () => {
-      const link = document.head.querySelector(
-        "link[data-kwizik-next-anime-preload='true']",
-      );
+      const link = document.head.querySelector("link[data-kwizik-next-anime-preload='true']");
       link?.remove();
     };
   }, []);
+
+  useEffect(() => {
+    const activeProvider = state?.media?.provider ?? state?.reveal?.provider ?? null;
+    if (!audioError) {
+      lastPlaybackErrorToastRef.current = null;
+      return;
+    }
+    const trackId = state?.media?.trackId ?? state?.reveal?.trackId ?? "unknown";
+    const key = `room-view:playback:${roomCode}:${state?.state ?? "unknown"}:${trackId}:${activeProvider ?? "preview"}`;
+    if (lastPlaybackErrorToastRef.current === key) return;
+    lastPlaybackErrorToastRef.current = key;
+    notify.error(projectionPlaybackErrorMessage(activeProvider), { key });
+  }, [
+    audioError,
+    roomCode,
+    state?.media?.provider,
+    state?.media?.trackId,
+    state?.reveal?.provider,
+    state?.reveal?.trackId,
+    state?.state,
+  ]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -464,7 +534,9 @@ export function RoomViewPage() {
           <strong>Manche {roundLabel}</strong>
         </div>
 
-        <div className={`sound-visual media-shell large${revealVideoActive ? " reveal-active" : ""}`}>
+        <div
+          className={`sound-visual media-shell large${revealVideoActive ? " reveal-active" : ""}`}
+        >
           {activeAnimeVideoSource && (
             <video
               ref={animeVideoRef}
@@ -515,7 +587,8 @@ export function RoomViewPage() {
               <span className="resolving-tracks-spinner" aria-hidden="true" />
               <p>Chargement de la video...</p>
               <small>
-                {state.mediaReadyCount}/{state.mediaReadyTotalCount} pret{state.mediaReadyTotalCount > 1 ? "s" : ""}
+                {state.mediaReadyCount}/{state.mediaReadyTotalCount} pret
+                {state.mediaReadyTotalCount > 1 ? "s" : ""}
               </small>
             </div>
           )}
@@ -535,7 +608,9 @@ export function RoomViewPage() {
           <p className="projection-hint">Mode texte: trouver titre ou artiste</p>
         )}
 
-        {(state?.state === "reveal" || state?.state === "leaderboard" || state?.state === "results") &&
+        {(state?.state === "reveal" ||
+          state?.state === "leaderboard" ||
+          state?.state === "results") &&
           state?.reveal && (
             <div className="reveal-box large reveal-glass">
               <div className="reveal-cover">
@@ -545,23 +620,23 @@ export function RoomViewPage() {
                   <div className="reveal-cover-fallback" aria-hidden="true" />
                 )}
               </div>
-                <div className="reveal-content">
-                  <p className="kicker">Reveal</p>
-                  <h3 className="reveal-title">
-                    {withRomajiLabel(state.reveal.title, state.reveal.titleRomaji)}
-                  </h3>
-                  {state.reveal.songTitle && (
-                    <p className="reveal-song-title">{state.reveal.songTitle}</p>
-                  )}
-                  {state.reveal.songArtists.length > 0 && (
-                    <p className="reveal-song-artists">{state.reveal.songArtists.join(", ")}</p>
-                  )}
-                  <p className="reveal-artist">
-                    {withRomajiLabel(state.reveal.artist, state.reveal.artistRomaji)}
-                  </p>
-                </div>
+              <div className="reveal-content">
+                <p className="kicker">Reveal</p>
+                <h3 className="reveal-title">
+                  {withRomajiLabel(state.reveal.title, state.reveal.titleRomaji)}
+                </h3>
+                {state.reveal.songTitle && (
+                  <p className="reveal-song-title">{state.reveal.songTitle}</p>
+                )}
+                {state.reveal.songArtists.length > 0 && (
+                  <p className="reveal-song-artists">{state.reveal.songArtists.join(", ")}</p>
+                )}
+                <p className="reveal-artist">
+                  {withRomajiLabel(state.reveal.artist, state.reveal.artistRomaji)}
+                </p>
               </div>
-            )}
+            </div>
+          )}
 
         <ol className="leaderboard-list compact">
           {(state?.leaderboard ?? []).map((entry) => (
@@ -576,20 +651,22 @@ export function RoomViewPage() {
                     </i>
                   )}
                 </strong>
-                {showRevealAnswersInLeaderboard && (() => {
-                  const revealAnswer = revealAnswerByPlayerId.get(entry.playerId);
-                  if (!revealAnswer) return null;
-                  const label = revealAnswer.submitted && revealAnswer.answer
-                    ? withRomajiLabel(revealAnswer.answer)
-                    : "Pas de réponse";
-                  return (
-                    <small
-                      className={`leaderboard-reveal-answer${revealAnswer.isCorrect ? " correct" : revealAnswer.submitted ? " wrong" : ""}`}
-                    >
-                      {label}
-                    </small>
-                  );
-                })()}
+                {showRevealAnswersInLeaderboard &&
+                  (() => {
+                    const revealAnswer = revealAnswerByPlayerId.get(entry.playerId);
+                    if (!revealAnswer) return null;
+                    const label =
+                      revealAnswer.submitted && revealAnswer.answer
+                        ? withRomajiLabel(revealAnswer.answer)
+                        : "Pas de réponse";
+                    return (
+                      <small
+                        className={`leaderboard-reveal-answer${revealAnswer.isCorrect ? " correct" : revealAnswer.submitted ? " wrong" : ""}`}
+                      >
+                        {label}
+                      </small>
+                    );
+                  })()}
               </div>
               <div className="leaderboard-score-block">
                 <em>{entry.score} pts</em>
@@ -627,12 +704,6 @@ export function RoomViewPage() {
       >
         <track kind="captions" />
       </audio>
-
-      {audioError && !usingYouTubePlayback && !usingAnimeVideoPlayback && (
-        <div className="projection-audio-status">
-          <p className="status error">Erreur audio sur la piste en cours.</p>
-        </div>
-      )}
     </section>
   );
 }

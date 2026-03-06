@@ -1,5 +1,6 @@
 import { Elysia } from "elysia";
 import { readSessionFromHeaders } from "../auth/client";
+import { pool } from "../db/client";
 import { musicAccountRepository } from "../repositories/MusicAccountRepository";
 import { matchRepository } from "../repositories/MatchRepository";
 import { profileRepository } from "../repositories/ProfileRepository";
@@ -40,6 +41,50 @@ function readOptionalNumberField(body: unknown, key: string) {
   return null;
 }
 
+const ANIMETHEMES_PROXY_RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
+const ANIMETHEMES_PROXY_RETRY_DELAYS_MS = [150, 300];
+
+function isSafeAnimeThemeVideoKey(value: string) {
+  return /^[A-Za-z0-9_.-]{1,180}$/.test(value);
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchAnimeThemeVideo(input: {
+  webmUrl: string;
+  headers: Headers;
+  signal: AbortSignal;
+}) {
+  for (let attempt = 0; attempt <= ANIMETHEMES_PROXY_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      const response = await fetch(input.webmUrl, {
+        method: "GET",
+        headers: input.headers,
+        signal: input.signal,
+      });
+
+      if (
+        !ANIMETHEMES_PROXY_RETRYABLE_STATUSES.has(response.status) ||
+        attempt === ANIMETHEMES_PROXY_RETRY_DELAYS_MS.length
+      ) {
+        return response;
+      }
+
+      await response.body?.cancel().catch(() => undefined);
+    } catch (error) {
+      if (attempt === ANIMETHEMES_PROXY_RETRY_DELAYS_MS.length) {
+        throw error;
+      }
+    }
+
+    await delay(ANIMETHEMES_PROXY_RETRY_DELAYS_MS[attempt] ?? 0);
+  }
+
+  throw new Error("UPSTREAM_UNREACHABLE");
+}
+
 export const quizRoutes = new Elysia({ prefix: "/quiz" })
   .post("/create", ({ body }) => {
     const categoryQuery = readOptionalStringField(body, "categoryQuery");
@@ -54,6 +99,79 @@ export const quizRoutes = new Elysia({ prefix: "/quiz" })
     serverNowMs: Date.now(),
     rooms: roomStore.publicRooms(),
   }))
+  .get("/media/animethemes/:videoKey", async ({ params, request, set }) => {
+    const videoKey = params.videoKey?.trim() ?? "";
+    if (!videoKey || !isSafeAnimeThemeVideoKey(videoKey)) {
+      set.status = 400;
+      return "INVALID_VIDEO_KEY";
+    }
+
+    if (!(typeof process.env.DATABASE_URL === "string" && process.env.DATABASE_URL.trim().length > 0)) {
+      set.status = 503;
+      return "DATABASE_UNAVAILABLE";
+    }
+
+    const target = await pool.query<{ webm_url: string }>(
+      `
+        select webm_url
+        from anime_theme_videos
+        where video_key = $1
+        limit 1
+      `,
+      [videoKey],
+    );
+    const webmUrl = target.rows[0]?.webm_url?.trim() ?? "";
+    if (!webmUrl || !/^https?:\/\//i.test(webmUrl)) {
+      set.status = 404;
+      return "VIDEO_NOT_FOUND";
+    }
+
+    const upstreamHeaders = new Headers();
+    const range = request.headers.get("range");
+    if (range && /^bytes=\d*-\d*(,\d*-\d*)*$/.test(range)) {
+      upstreamHeaders.set("range", range);
+    }
+    upstreamHeaders.set("accept", "video/webm,*/*");
+
+    let upstream: Response;
+    try {
+      upstream = await fetchAnimeThemeVideo({
+        webmUrl,
+        headers: upstreamHeaders,
+        signal: request.signal,
+      });
+    } catch {
+      set.status = 502;
+      return "UPSTREAM_UNREACHABLE";
+    }
+
+    if (!upstream.ok && upstream.status !== 206) {
+      set.status = upstream.status;
+      return await upstream.text();
+    }
+
+    const headers = new Headers();
+    for (const name of [
+      "content-type",
+      "content-length",
+      "content-range",
+      "accept-ranges",
+      "cache-control",
+      "etag",
+      "last-modified",
+    ]) {
+      const value = upstream.headers.get(name);
+      if (value) {
+        headers.set(name, value);
+      }
+    }
+    headers.set("x-kwizik-media-proxy", "animethemes");
+
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers,
+    });
+  })
   .post("/join", async ({ body, headers, set }) => {
     const roomCode = readStringField(body, "roomCode");
     const displayName = readStringField(body, "displayName");

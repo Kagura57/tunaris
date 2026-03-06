@@ -638,17 +638,17 @@ describe("RoomStore gameplay progression", () => {
     expect(playing?.deadlineMs).toBe(550);
   });
 
-  it("skips stalled animethemes loading rounds instead of starting the playing timer", async () => {
+  it("keeps animethemes rounds loading until an extreme timeout is reached", async () => {
     let nowMs = 0;
     const animeTrack: MusicTrack = {
       provider: "animethemes",
       id: "timeout-track",
       title: "Timeout Anime",
       artist: "OP1",
-      previewUrl: "https://v.animethemes.moe/timeout-track.webm",
-      sourceUrl: "https://v.animethemes.moe/timeout-track.webm",
-      audioUrl: "https://v.animethemes.moe/timeout-track.webm",
-      videoUrl: "https://v.animethemes.moe/timeout-track.webm",
+      previewUrl: "https://api.example.test/quiz/media/animethemes/timeout-track.webm",
+      sourceUrl: "https://api.example.test/quiz/media/animethemes/timeout-track.webm",
+      audioUrl: "https://api.example.test/quiz/media/animethemes/timeout-track.webm",
+      videoUrl: "https://api.example.test/quiz/media/animethemes/timeout-track.webm",
     };
 
     const store = new RoomStore({
@@ -689,7 +689,11 @@ describe("RoomStore gameplay progression", () => {
     nowMs = 10;
     expect(store.roomState(created.roomCode)?.state).toBe("loading");
 
-    nowMs = 170;
+    nowMs = 30_000;
+    const stillLoading = store.roomState(created.roomCode);
+    expect(stillLoading?.state).toBe("loading");
+
+    nowMs = 90_100;
     const skipped = store.roomState(created.roomCode);
     expect(skipped?.state).toBe("results");
   });
@@ -1269,7 +1273,9 @@ describe("RoomStore gameplay progression", () => {
 
   it("uses an unbiased AniList random draw without recent-history exclusions", async () => {
     const previousDatabaseUrl = process.env.DATABASE_URL;
+    const previousBetterAuthUrl = process.env.BETTER_AUTH_URL;
     process.env.DATABASE_URL = "postgres://test";
+    process.env.BETTER_AUTH_URL = "https://api.example.test";
     const animeIds = Array.from({ length: 741 }, (_, index) => index + 1);
     const unionSpy = vi
       .spyOn(userAnimeLibraryRepository, "unionAnimeIdsForUsers")
@@ -1307,6 +1313,18 @@ describe("RoomStore gameplay progression", () => {
       expect(Array.isArray(queryParams)).toBe(true);
       expect(queryParams ?? []).toHaveLength(2);
       const state = store.roomState(created.roomCode);
+      const roomMap = (store as unknown as {
+        rooms: Map<string, { trackPool: MusicTrack[] }>;
+      }).rooms;
+      const session = roomMap.get(created.roomCode);
+      expect(session?.trackPool.length ?? 0).toBeGreaterThan(0);
+      expect(
+        session?.trackPool.every(
+          (track) =>
+            track.provider !== "animethemes" ||
+            (track.sourceUrl?.startsWith("https://api.example.test/quiz/media/animethemes/") ?? false),
+        ) ?? false,
+      ).toBe(true);
       expect(state?.answerSuggestions.includes("Anime EN 1")).toBe(true);
       expect(state?.answerSuggestions.includes("Alias 1")).toBe(true);
     } finally {
@@ -1314,6 +1332,11 @@ describe("RoomStore gameplay progression", () => {
         delete process.env.DATABASE_URL;
       } else {
         process.env.DATABASE_URL = previousDatabaseUrl;
+      }
+      if (previousBetterAuthUrl === undefined) {
+        delete process.env.BETTER_AUTH_URL;
+      } else {
+        process.env.BETTER_AUTH_URL = previousBetterAuthUrl;
       }
       unionSpy.mockRestore();
       querySpy.mockRestore();

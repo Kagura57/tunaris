@@ -2,7 +2,16 @@ import { FormEvent, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { getPublicRooms, joinRoom } from "../lib/api";
+import { notify } from "../lib/notify";
 import { useGameStore } from "../stores/gameStore";
+
+function joinErrorMessage(error: unknown) {
+  if (!(error instanceof Error)) return "Impossible de rejoindre cette room.";
+  if (error.message === "ROOM_NOT_JOINABLE") {
+    return "La room est terminée et n’accepte plus de nouveaux joueurs.";
+  }
+  return "Impossible de rejoindre cette room.";
+}
 
 export function JoinPage() {
   const navigate = useNavigate();
@@ -23,6 +32,7 @@ export function JoinPage() {
       }),
     onSuccess: (result) => {
       const normalizedCode = roomCode.trim().toUpperCase();
+      notify.success("Room rejointe.");
       setSession({
         roomCode: normalizedCode,
         playerId: result.playerId,
@@ -34,8 +44,12 @@ export function JoinPage() {
         params: { roomCode: normalizedCode },
       });
     },
+    onError: (error) => {
+      notify.error(joinErrorMessage(error), {
+        key: "join-page:join:error",
+      });
+    },
   });
-  const joinErrorCode = joinMutation.error instanceof Error ? joinMutation.error.message : null;
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -74,12 +88,6 @@ export function JoinPage() {
             {joinMutation.isPending ? "Connexion..." : "Entrer dans la room"}
           </button>
         </form>
-
-        <p className={joinMutation.isError ? "status error" : "status"}>
-          {joinErrorCode === "ROOM_NOT_JOINABLE" && "La room est terminée et n’accepte plus de nouveaux joueurs."}
-          {joinMutation.isError && joinErrorCode !== "ROOM_NOT_JOINABLE" && "Impossible de rejoindre cette room."}
-        </p>
-
         <h3 className="panel-title">Rooms publiques</h3>
         <ul className="public-room-list">
           {(publicRoomsQuery.data?.rooms ?? []).map((room) => (

@@ -1041,6 +1041,100 @@ select option {
   color: var(--danger);
 }
 
+.kwizik-toaster {
+  --normal-bg: transparent;
+  --normal-border: transparent;
+}
+
+.kwizik-toast {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background:
+    linear-gradient(180deg, rgba(13, 19, 31, 0.97), rgba(8, 12, 21, 0.97));
+  color: var(--text);
+  box-shadow:
+    0 16px 40px rgba(0, 0, 0, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(14px);
+  border-radius: 16px;
+}
+
+.kwizik-toast-content {
+  gap: 6px;
+}
+
+.kwizik-toast-title {
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.kwizik-toast-description {
+  color: var(--muted);
+}
+
+.kwizik-toast-success {
+  border-color: rgba(101, 245, 184, 0.3);
+  box-shadow:
+    0 16px 40px rgba(0, 0, 0, 0.38),
+    inset 3px 0 0 rgba(101, 245, 184, 0.95);
+}
+
+.kwizik-toast-error {
+  border-color: rgba(255, 95, 122, 0.34);
+  box-shadow:
+    0 16px 40px rgba(0, 0, 0, 0.38),
+    inset 3px 0 0 rgba(255, 95, 122, 0.98);
+}
+
+.kwizik-toast-info,
+.kwizik-toast-default {
+  border-color: rgba(54, 214, 180, 0.24);
+  box-shadow:
+    0 16px 40px rgba(0, 0, 0, 0.38),
+    inset 3px 0 0 rgba(54, 214, 180, 0.94);
+}
+
+.kwizik-toast-loading {
+  border-color: rgba(255, 232, 111, 0.28);
+  box-shadow:
+    0 16px 40px rgba(0, 0, 0, 0.38),
+    inset 3px 0 0 rgba(255, 232, 111, 0.96);
+}
+
+.kwizik-toast-action,
+.kwizik-toast-cancel,
+.kwizik-toast-close {
+  border-radius: 999px;
+}
+
+.kwizik-toast-action {
+  background: linear-gradient(135deg, var(--accent-a), #ffb25f);
+  color: #111;
+  font-weight: 800;
+}
+
+.kwizik-toast-cancel {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.kwizik-toast-close {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--muted);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+@media (max-width: 720px) {
+  [data-sonner-toaster] {
+    left: 14px !important;
+    right: 14px !important;
+    width: auto !important;
+  }
+
+  [data-sonner-toast] {
+    width: calc(100vw - 28px) !important;
+  }
+}
+
 .blindtest-stage,
 .projection-stage {
   min-height: calc(100vh - 90px);

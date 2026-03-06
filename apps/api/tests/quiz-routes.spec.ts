@@ -1,7 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { pool } from "../src/db/client";
 import { app } from "../src/index";
 
 describe("quiz routes", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.DATABASE_URL;
+  });
+
   it("lists public rooms", async () => {
     const createRes = await app.handle(new Request("http://localhost/quiz/create", { method: "POST" }));
     const created = (await createRes.json()) as { roomCode: string };
@@ -64,5 +70,46 @@ describe("quiz routes", () => {
     };
 
     expect(results.ranking[0]?.userId).toBeNull();
+  });
+
+  it("proxies animethemes media through the API", async () => {
+    process.env.DATABASE_URL = "postgres://test";
+
+    vi.spyOn(pool, "query").mockResolvedValue({
+      rows: [{ webm_url: "https://v.animethemes.moe/demo-track.webm" }],
+    } as never);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("demo-video", {
+        status: 206,
+        headers: {
+          "content-type": "video/webm",
+          "content-length": "10",
+          "content-range": "bytes 0-9/10",
+          "accept-ranges": "bytes",
+          "cache-control": "public, max-age=60",
+        },
+      }),
+    );
+
+    const response = await app.handle(
+      new Request("http://localhost/quiz/media/animethemes/demo-track", {
+        headers: { range: "bytes=0-9" },
+      }),
+    );
+
+    expect(response.status).toBe(206);
+    expect(response.headers.get("x-kwizik-media-proxy")).toBe("animethemes");
+    expect(await response.text()).toBe("demo-video");
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://v.animethemes.moe/demo-track.webm",
+      expect.objectContaining({
+        method: "GET",
+      }),
+    );
+    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit | undefined;
+    const headers = new Headers(init?.headers);
+    expect(headers.get("range")).toBe("bytes=0-9");
+    expect(headers.get("accept")).toBe("video/webm,*/*");
   });
 });

@@ -26,6 +26,7 @@ import {
   type TitlePreference,
   type UnifiedPlaylistOption,
 } from "../../../lib/api";
+import { notify } from "../../../lib/notify";
 import { fetchLiveRoomState } from "../../../lib/realtime";
 import { useGameStore } from "../../../stores/gameStore";
 
@@ -33,8 +34,8 @@ const ROUND_MS = 20_000;
 const COUNTDOWN_MS = 3_000;
 const REVEAL_MS = 20_000;
 const LEADERBOARD_MS = 0;
-const ANIME_LOADING_STALL_REPORT_MS = 15_000;
-const ANIME_MEDIA_ERROR_THRESHOLD = 3;
+const ANIME_MEDIA_LONG_LOAD_TOAST_MS = 20_000;
+const ANIME_MEDIA_EXTREME_TIMEOUT_MS = 90_000;
 const MEDIA_READY_RETRY_DELAY_MS = 350;
 const MEDIA_READY_RETRY_MAX_ATTEMPTS = 4;
 
@@ -44,6 +45,177 @@ type AnswerSelectOption = {
   value: string;
   label: string;
 };
+
+function errorCode(error: unknown) {
+  return error instanceof Error ? error.message : null;
+}
+
+function roomMissingMessage() {
+  return "Cette room n'est plus disponible.";
+}
+
+function playerSessionExpiredMessage() {
+  return "Ta session joueur a expire. Rejoins la room.";
+}
+
+function hostOnlyMessage(action: string) {
+  return `Seul le host peut ${action}.`;
+}
+
+function sourceModeLabel(mode: SourceMode) {
+  if (mode === "anilist_union") return "AniList synchronise";
+  if (mode === "players_liked") return "Liked Songs joueurs";
+  return "Playlist publique";
+}
+
+function themeModeLabel(mode: ThemeMode) {
+  if (mode === "op_only") return "OP only";
+  if (mode === "ed_only") return "ED only";
+  return "Mix";
+}
+
+function snapshotErrorMessage(error: unknown) {
+  if (errorCode(error) === "ROOM_NOT_FOUND") {
+    return roomMissingMessage();
+  }
+  return "Synchronisation impossible.";
+}
+
+function startErrorMessage(error: unknown, spotifyCooldownRemainingSec: number) {
+  switch (errorCode(error)) {
+    case "NO_TRACKS_FOUND":
+      return "Aucune chanson jouable trouvee pour le moment. Reessaie dans quelques secondes.";
+    case "SPOTIFY_RATE_LIMITED":
+      return `Spotify limite temporairement les requetes. Reessaie dans ${spotifyCooldownRemainingSec}s.`;
+    case "SOURCE_NOT_SET":
+      return "Le host doit choisir une playlist avant de lancer.";
+    case "PLAYER_NOT_FOUND":
+      return playerSessionExpiredMessage();
+    case "PLAYERS_LIBRARY_NOT_READY":
+      return "Le mode AniList necessite au moins un joueur avec une bibliotheque AniList synchronisee.";
+    case "HOST_ONLY":
+      return hostOnlyMessage("lancer la partie");
+    case "ROOM_NOT_FOUND":
+      return roomMissingMessage();
+    default:
+      return "Impossible de lancer la partie.";
+  }
+}
+
+function sourceModeErrorMessage(error: unknown) {
+  switch (errorCode(error)) {
+    case "HOST_ONLY":
+      return hostOnlyMessage("changer le mode source");
+    case "PLAYER_NOT_FOUND":
+      return playerSessionExpiredMessage();
+    case "ROOM_NOT_FOUND":
+      return roomMissingMessage();
+    default:
+      return "Impossible de mettre a jour le mode source.";
+  }
+}
+
+function themeModeErrorMessage(error: unknown) {
+  switch (errorCode(error)) {
+    case "HOST_ONLY":
+      return hostOnlyMessage("changer le mode themes");
+    case "PLAYER_NOT_FOUND":
+      return playerSessionExpiredMessage();
+    case "ROOM_NOT_FOUND":
+      return roomMissingMessage();
+    default:
+      return "Impossible de mettre a jour le mode themes.";
+  }
+}
+
+function publicPlaylistErrorMessage(error: unknown) {
+  switch (errorCode(error)) {
+    case "HOST_ONLY":
+      return hostOnlyMessage("choisir la playlist publique");
+    case "PLAYER_NOT_FOUND":
+      return playerSessionExpiredMessage();
+    case "ROOM_NOT_FOUND":
+      return roomMissingMessage();
+    default:
+      return "Impossible de mettre a jour la playlist publique.";
+  }
+}
+
+function readyErrorMessage(error: unknown) {
+  switch (errorCode(error)) {
+    case "INVALID_STATE":
+      return "Le statut pret se gere uniquement dans le lobby.";
+    case "PLAYER_NOT_FOUND":
+      return playerSessionExpiredMessage();
+    case "ROOM_NOT_FOUND":
+      return roomMissingMessage();
+    default:
+      return "Impossible de mettre a jour ton statut.";
+  }
+}
+
+function kickErrorMessage(error: unknown) {
+  switch (errorCode(error)) {
+    case "HOST_ONLY":
+      return hostOnlyMessage("ejecter un joueur");
+    case "PLAYER_NOT_FOUND":
+      return playerSessionExpiredMessage();
+    case "ROOM_NOT_FOUND":
+      return roomMissingMessage();
+    default:
+      return "Impossible d'ejecter ce joueur.";
+  }
+}
+
+function replayErrorMessage(error: unknown) {
+  switch (errorCode(error)) {
+    case "HOST_ONLY":
+      return hostOnlyMessage("relancer une partie");
+    case "PLAYER_NOT_FOUND":
+      return playerSessionExpiredMessage();
+    case "ROOM_NOT_FOUND":
+      return roomMissingMessage();
+    default:
+      return "Impossible de revenir au lobby.";
+  }
+}
+
+function skipErrorMessage(error: unknown) {
+  switch (errorCode(error)) {
+    case "INVALID_STATE":
+      return "Le vote Skip/Next n'est pas disponible dans cet etat.";
+    case "PLAYER_NOT_FOUND":
+      return playerSessionExpiredMessage();
+    case "ROOM_NOT_FOUND":
+      return roomMissingMessage();
+    default:
+      return "Impossible d'enregistrer ton vote pour le moment.";
+  }
+}
+
+function chatErrorMessage(error: unknown) {
+  switch (errorCode(error)) {
+    case "PLAYER_NOT_FOUND":
+      return playerSessionExpiredMessage();
+    case "ROOM_NOT_FOUND":
+      return roomMissingMessage();
+    default:
+      return "Impossible d'envoyer le message.";
+  }
+}
+
+function answerErrorMessage(error: unknown) {
+  switch (errorCode(error)) {
+    case "ANSWER_NOT_ACCEPTED":
+      return "Reponse non prise en compte (round expire ou deja valide).";
+    case "PLAYER_NOT_FOUND":
+      return playerSessionExpiredMessage();
+    case "ROOM_NOT_FOUND":
+      return roomMissingMessage();
+    default:
+      return "Reponse refusee.";
+  }
+}
 
 function clamp01(value: number) {
   return Math.max(0, Math.min(1, value));
@@ -79,7 +251,12 @@ function deterministicIntFromSeed(seed: string, min: number, max: number) {
   return safeMin + (stableHash(seed) % size);
 }
 
-function computeAnimeStartSec(input: { roomCode: string; round: number; trackId: string; durationSec: number }) {
+function computeAnimeStartSec(input: {
+  roomCode: string;
+  round: number;
+  trackId: string;
+  durationSec: number;
+}) {
   const safeDuration = Math.max(0, Math.floor(input.durationSec));
   const roundDurationSec = Math.max(1, Math.floor(ROUND_MS / 1000));
   if (safeDuration <= roundDurationSec) return 0;
@@ -116,7 +293,8 @@ function formatRoundChoiceLabel(choice: RoundChoice, preference: TitlePreference
   const romajiTitle = withRomajiLabel(choice.titleRomaji);
   const englishTitle = choice.titleEnglish?.trim() ?? "";
   const hasDistinctEnglish =
-    englishTitle.length > 0 && normalizeChoiceLabel(englishTitle) !== normalizeChoiceLabel(choice.titleRomaji);
+    englishTitle.length > 0 &&
+    normalizeChoiceLabel(englishTitle) !== normalizeChoiceLabel(choice.titleRomaji);
 
   if (preference === "english" && hasDistinctEnglish) {
     return `${englishTitle} - ${choice.themeLabel}`;
@@ -138,20 +316,23 @@ function revealArtworkUrl(reveal: {
 }
 
 function lobbyReadyStatusLabel(
-  state: {
-    allReady: boolean;
-    canStart: boolean;
-    isResolvingTracks: boolean;
-    poolBuild: {
-      status: "idle" | "building" | "ready" | "failed";
-    };
-    sourceMode: "public_playlist" | "players_liked" | "anilist_union";
-    sourceConfig: {
-      publicPlaylist: {
-        sourceQuery: string;
-      } | null;
-    };
-  } | null | undefined,
+  state:
+    | {
+        allReady: boolean;
+        canStart: boolean;
+        isResolvingTracks: boolean;
+        poolBuild: {
+          status: "idle" | "building" | "ready" | "failed";
+        };
+        sourceMode: "public_playlist" | "players_liked" | "anilist_union";
+        sourceConfig: {
+          publicPlaylist: {
+            sourceQuery: string;
+          } | null;
+        };
+      }
+    | null
+    | undefined,
   isHost: boolean,
   hasActivePlayerSeat: boolean,
 ) {
@@ -171,7 +352,10 @@ function lobbyReadyStatusLabel(
     }
     return "";
   }
-  if ((state.sourceMode === "players_liked" || state.sourceMode === "anilist_union") && state.poolBuild.status !== "ready") {
+  if (
+    (state.sourceMode === "players_liked" || state.sourceMode === "anilist_union") &&
+    state.poolBuild.status !== "ready"
+  ) {
     return " · Préparation de la playlist des joueurs en cours...";
   }
   return isHost ? " · Lancement auto en cours..." : " · En attente du host pour lancer.";
@@ -226,7 +410,9 @@ export function RoomPlayPage() {
   const [progress, setProgress] = useState(0);
   const [audioError, setAudioError] = useState(false);
   const [iframeEpoch, setIframeEpoch] = useState(0);
-  const [animePlaybackStatus, setAnimePlaybackStatus] = useState<"idle" | "buffering" | "ready" | "playing">("idle");
+  const [animePlaybackStatus, setAnimePlaybackStatus] = useState<
+    "idle" | "buffering" | "ready" | "playing"
+  >("idle");
   const [stableYoutubePlayback, setStableYoutubePlayback] = useState<{
     key: string;
     embedUrl: string;
@@ -250,9 +436,13 @@ export function RoomPlayPage() {
   const [chatInput, setChatInput] = useState("");
   const [spotifyRateLimitUntilMs, setSpotifyRateLimitUntilMs] = useState<number | null>(null);
   const [startRetryNotBeforeMs, setStartRetryNotBeforeMs] = useState<number | null>(null);
-  const [phaseSkipVote, setPhaseSkipVote] = useState<{ phase: "playing" | "reveal"; round: number } | null>(null);
+  const [phaseSkipVote, setPhaseSkipVote] = useState<{
+    phase: "playing" | "reveal";
+    round: number;
+  } | null>(null);
   const youtubeIframeRef = useRef<HTMLIFrameElement | null>(null);
   const animeVideoRef = useRef<HTMLVideoElement | null>(null);
+  const nextAnimePreloadRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lastPreviewRef = useRef<string | null>(null);
   const autoStartRoundRef = useRef<number>(0);
@@ -268,11 +458,14 @@ export function RoomPlayPage() {
   const reportedMediaReadyRef = useRef<string | null>(null);
   const appliedAnimeStartRef = useRef<string | null>(null);
   const failedAnimeTrackKeyRef = useRef<string | null>(null);
-  const animeMediaErrorRef = useRef<{ key: string; count: number } | null>(null);
+  const animeLongLoadToastRef = useRef<string | null>(null);
+  const animeLastProgressAtRef = useRef<number | null>(null);
   const userInteractionUnlockedRef = useRef(false);
   const roomMissingRedirectedRef = useRef(false);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const lastSnapshotErrorToastRef = useRef<string | null>(null);
+  const lastAudioErrorToastRef = useRef<string | null>(null);
 
   useEffect(() => {
     return () => {
@@ -314,9 +507,36 @@ export function RoomPlayPage() {
     if (!(error instanceof HttpStatusError)) return;
     if (error.status !== 404 || error.message !== "ROOM_NOT_FOUND") return;
     roomMissingRedirectedRef.current = true;
+    notify.error(roomMissingMessage(), {
+      key: `room-play:missing-room:${roomCode}`,
+    });
     clearSession();
     navigate({ to: "/" });
-  }, [clearSession, navigate, snapshotQuery.error]);
+  }, [clearSession, navigate, roomCode, snapshotQuery.error]);
+
+  useEffect(() => {
+    const error = snapshotQuery.error;
+    if (!error) {
+      lastSnapshotErrorToastRef.current = null;
+      return;
+    }
+    if (
+      error instanceof HttpStatusError &&
+      error.status === 404 &&
+      error.message === "ROOM_NOT_FOUND"
+    ) {
+      return;
+    }
+    const signature =
+      error instanceof HttpStatusError
+        ? `${error.status}:${error.message}`
+        : (errorCode(error) ?? "UNKNOWN_ERROR");
+    if (lastSnapshotErrorToastRef.current === signature) return;
+    lastSnapshotErrorToastRef.current = signature;
+    notify.error(snapshotErrorMessage(error), {
+      key: `room-play:snapshot:${roomCode}:${signature}`,
+    });
+  }, [roomCode, snapshotQuery.error]);
 
   const isHost = Boolean(session.playerId && state?.hostPlayerId === session.playerId);
   const isWaitingLobby = state?.state === "waiting";
@@ -324,7 +544,8 @@ export function RoomPlayPage() {
   const isPlayersLikedPoolBuilding =
     (state?.sourceMode === "players_liked" || state?.sourceMode === "anilist_union") &&
     state.poolBuild.status === "building";
-  const currentPlayer = state?.players.find((player) => player.playerId === session.playerId) ?? null;
+  const currentPlayer =
+    state?.players.find((player) => player.playerId === session.playerId) ?? null;
   const hasActivePlayerSeat = Boolean(currentPlayer);
   const lobbyReadyStatus = lobbyReadyStatusLabel(state, isHost, hasActivePlayerSeat);
   const typedPlaylistQuery = playlistQuery.trim();
@@ -388,12 +609,21 @@ export function RoomPlayPage() {
         playlists,
       };
     },
-    enabled: isWaitingLobby && isHost && sourceMode === "public_playlist" && normalizedPlaylistQuery.length >= 2,
+    enabled:
+      isWaitingLobby &&
+      isHost &&
+      sourceMode === "public_playlist" &&
+      normalizedPlaylistQuery.length >= 2,
     staleTime: 2 * 60_000,
   });
 
   const bulkAnswerSuggestionsQuery = useQuery({
-    queryKey: ["room-answer-suggestions", roomCode, state?.sourceMode ?? "unknown", session.playerId ?? "anonymous"],
+    queryKey: [
+      "room-answer-suggestions",
+      roomCode,
+      state?.sourceMode ?? "unknown",
+      session.playerId ?? "anonymous",
+    ],
     queryFn: () =>
       getRoomAnswerSuggestions({
         roomCode,
@@ -483,17 +713,22 @@ export function RoomPlayPage() {
     const normalized = answer.trim();
     if (normalized.length <= 0) return null;
     const existing =
-      answerSelectOptions.find((option) => option.value.toLowerCase() === normalized.toLowerCase()) ?? null;
+      answerSelectOptions.find(
+        (option) => option.value.toLowerCase() === normalized.toLowerCase(),
+      ) ?? null;
     if (existing) return existing;
     return { value: normalized, label: normalized };
   }, [answer, answerSelectOptions]);
   const answerSeedIsLoading =
     state?.state === "playing" &&
     state.mode === "text" &&
-    (isResolvingTracks || bulkAnswerSuggestionsQuery.isFetching || animeAutocompleteQuery.isFetching) &&
+    (isResolvingTracks ||
+      bulkAnswerSuggestionsQuery.isFetching ||
+      animeAutocompleteQuery.isFetching) &&
     answerSuggestionPool.length <= 0;
 
-  const showRevealAnswersInLeaderboard = state?.state === "reveal" || state?.state === "leaderboard";
+  const showRevealAnswersInLeaderboard =
+    state?.state === "reveal" || state?.state === "leaderboard";
   const revealAnswerByPlayerId = useMemo(() => {
     const map = new Map<
       string,
@@ -579,7 +814,9 @@ export function RoomPlayPage() {
     onSuccess: (result) => {
       if (result.ok === false) {
         const retryAfterMs =
-          typeof result.retryAfterMs === "number" && result.retryAfterMs > 0 ? result.retryAfterMs : 1_500;
+          typeof result.retryAfterMs === "number" && result.retryAfterMs > 0
+            ? result.retryAfterMs
+            : 1_500;
         autoStartRoundRef.current = 0;
         setStartRetryNotBeforeMs(Date.now() + retryAfterMs);
         setSpotifyRateLimitUntilMs(null);
@@ -592,16 +829,22 @@ export function RoomPlayPage() {
     },
     onError: (error) => {
       if (error instanceof HttpStatusError && error.message === "SPOTIFY_RATE_LIMITED") {
-        const retryAfterMs = error.retryAfterMs && error.retryAfterMs > 0 ? error.retryAfterMs : 10_000;
+        const retryAfterMs =
+          error.retryAfterMs && error.retryAfterMs > 0 ? error.retryAfterMs : 10_000;
         setSpotifyRateLimitUntilMs(Date.now() + retryAfterMs);
         setStartRetryNotBeforeMs(null);
+        notify.error(startErrorMessage(error, Math.max(1, Math.ceil(retryAfterMs / 1000))), {
+          key: `room-play:start:${roomCode}:spotify-rate-limited`,
+        });
         return;
       }
       if (
         error instanceof HttpStatusError &&
-        (error.message === "PLAYERS_LIBRARY_SYNCING" || error.message === "PLAYLIST_TRACKS_RESOLVING")
+        (error.message === "PLAYERS_LIBRARY_SYNCING" ||
+          error.message === "PLAYLIST_TRACKS_RESOLVING")
       ) {
-        const retryAfterMs = error.retryAfterMs && error.retryAfterMs > 0 ? error.retryAfterMs : 1_500;
+        const retryAfterMs =
+          error.retryAfterMs && error.retryAfterMs > 0 ? error.retryAfterMs : 1_500;
         // Keep auto-start active while tracks are still being resolved.
         autoStartRoundRef.current = 0;
         setStartRetryNotBeforeMs(Date.now() + retryAfterMs);
@@ -611,6 +854,9 @@ export function RoomPlayPage() {
       }
       setStartRetryNotBeforeMs(null);
       setSpotifyRateLimitUntilMs(null);
+      notify.error(startErrorMessage(error, spotifyCooldownRemainingSec), {
+        key: `room-play:start:${roomCode}:${errorCode(error) ?? "unknown"}`,
+      });
     },
   });
 
@@ -657,7 +903,15 @@ export function RoomPlayPage() {
         mode,
       });
     },
-    onSuccess: () => snapshotQuery.refetch(),
+    onSuccess: (_result, mode) => {
+      notify.success(`Mode source: ${sourceModeLabel(mode)}.`);
+      snapshotQuery.refetch();
+    },
+    onError: (error) => {
+      notify.error(sourceModeErrorMessage(error), {
+        key: `room-play:source-mode:${roomCode}:${errorCode(error) ?? "unknown"}`,
+      });
+    },
   });
 
   const themeModeMutation = useMutation({
@@ -669,7 +923,15 @@ export function RoomPlayPage() {
         mode,
       });
     },
-    onSuccess: () => snapshotQuery.refetch(),
+    onSuccess: (_result, mode) => {
+      notify.success(`Mode themes: ${themeModeLabel(mode)}.`);
+      snapshotQuery.refetch();
+    },
+    onError: (error) => {
+      notify.error(themeModeErrorMessage(error), {
+        key: `room-play:theme-mode:${roomCode}:${errorCode(error) ?? "unknown"}`,
+      });
+    },
   });
 
   const publicPlaylistMutation = useMutation({
@@ -684,7 +946,15 @@ export function RoomPlayPage() {
         sourceQuery: playlist.sourceQuery,
       });
     },
-    onSuccess: () => snapshotQuery.refetch(),
+    onSuccess: (_result, playlist) => {
+      notify.success(`Playlist publique: ${withRomajiLabel(playlist.name)}.`);
+      snapshotQuery.refetch();
+    },
+    onError: (error) => {
+      notify.error(publicPlaylistErrorMessage(error), {
+        key: `room-play:playlist:${roomCode}:${errorCode(error) ?? "unknown"}`,
+      });
+    },
   });
 
   const readyMutation = useMutation({
@@ -696,7 +966,19 @@ export function RoomPlayPage() {
         ready,
       });
     },
-    onSuccess: () => snapshotQuery.refetch(),
+    onSuccess: (_result, ready) => {
+      if (ready) {
+        notify.success("Tu es pret.");
+      } else {
+        notify.info("Tu n'es plus pret.");
+      }
+      snapshotQuery.refetch();
+    },
+    onError: (error) => {
+      notify.error(readyErrorMessage(error), {
+        key: `room-play:ready:${roomCode}:${errorCode(error) ?? "unknown"}`,
+      });
+    },
   });
 
   const kickMutation = useMutation({
@@ -708,7 +990,15 @@ export function RoomPlayPage() {
         targetPlayerId,
       });
     },
-    onSuccess: () => snapshotQuery.refetch(),
+    onSuccess: () => {
+      notify.success("Joueur ejecte.");
+      snapshotQuery.refetch();
+    },
+    onError: (error) => {
+      notify.error(kickErrorMessage(error), {
+        key: `room-play:kick:${roomCode}:${errorCode(error) ?? "unknown"}`,
+      });
+    },
   });
 
   const replayMutation = useMutation({
@@ -719,7 +1009,15 @@ export function RoomPlayPage() {
         playerId: session.playerId,
       });
     },
-    onSuccess: () => snapshotQuery.refetch(),
+    onSuccess: () => {
+      notify.success("Retour au lobby.");
+      snapshotQuery.refetch();
+    },
+    onError: (error) => {
+      notify.error(replayErrorMessage(error), {
+        key: `room-play:replay:${roomCode}:${errorCode(error) ?? "unknown"}`,
+      });
+    },
   });
 
   const skipMutation = useMutation({
@@ -738,8 +1036,11 @@ export function RoomPlayPage() {
         round: state.round,
       });
     },
-    onError: () => {
+    onError: (error) => {
       setPhaseSkipVote(null);
+      notify.error(skipErrorMessage(error), {
+        key: `room-play:skip:${roomCode}:${errorCode(error) ?? "unknown"}`,
+      });
     },
     onSuccess: (result) => {
       if (!result.accepted) {
@@ -759,8 +1060,11 @@ export function RoomPlayPage() {
       });
     },
     onSuccess: () => snapshotQuery.refetch(),
-    onError: () => {
+    onError: (_error, trackId) => {
       reportedUnavailableMediaRef.current = null;
+      notify.error("Signalement du theme indisponible impossible. Utilise Skip pour continuer.", {
+        key: `room-play:anime-unavailable:${roomCode}:${trackId}`,
+      });
     },
   });
 
@@ -826,9 +1130,12 @@ export function RoomPlayPage() {
       }
       snapshotQuery.refetch();
     },
-    onError: () => {
+    onError: (error) => {
       setSubmittedMcq(null);
       setSubmittedText(null);
+      notify.error(answerErrorMessage(error), {
+        key: `room-play:answer:${roomCode}:${state?.round ?? 0}:${errorCode(error) ?? "unknown"}`,
+      });
       snapshotQuery.refetch();
     },
   });
@@ -856,27 +1163,29 @@ export function RoomPlayPage() {
       snapshotQuery.refetch();
     },
     onError: (error) => {
-      if (!(error instanceof HttpStatusError)) return;
-      if (error.status !== 404 || error.message !== "ROOM_NOT_FOUND") return;
-      if (roomMissingRedirectedRef.current) return;
-      roomMissingRedirectedRef.current = true;
-      clearSession();
-      navigate({ to: "/" });
+      if (
+        error instanceof HttpStatusError &&
+        error.status === 404 &&
+        error.message === "ROOM_NOT_FOUND"
+      ) {
+        if (roomMissingRedirectedRef.current) return;
+        roomMissingRedirectedRef.current = true;
+        notify.error(roomMissingMessage(), {
+          key: `room-play:missing-room:${roomCode}`,
+        });
+        clearSession();
+        navigate({ to: "/" });
+        return;
+      }
+      notify.error(chatErrorMessage(error), {
+        key: `room-play:chat:${roomCode}:${errorCode(error) ?? "unknown"}`,
+      });
     },
   });
 
   const startErrorCode = startMutation.error instanceof Error ? startMutation.error.message : null;
   const isNonBlockingStartError =
     startErrorCode === "PLAYERS_LIBRARY_SYNCING" || startErrorCode === "PLAYLIST_TRACKS_RESOLVING";
-  const sourceModeErrorCode = sourceModeMutation.error instanceof Error ? sourceModeMutation.error.message : null;
-  const themeModeErrorCode = themeModeMutation.error instanceof Error ? themeModeMutation.error.message : null;
-  const publicPlaylistErrorCode =
-    publicPlaylistMutation.error instanceof Error ? publicPlaylistMutation.error.message : null;
-  const readyErrorCode = readyMutation.error instanceof Error ? readyMutation.error.message : null;
-  const kickErrorCode = kickMutation.error instanceof Error ? kickMutation.error.message : null;
-  const replayErrorCode = replayMutation.error instanceof Error ? replayMutation.error.message : null;
-  const skipErrorCode = skipMutation.error instanceof Error ? skipMutation.error.message : null;
-  const answerErrorCode = answerMutation.error instanceof Error ? answerMutation.error.message : null;
   const spotifyCooldownRemainingMs = useMemo(() => {
     if (!spotifyRateLimitUntilMs) return 0;
     return Math.max(0, spotifyRateLimitUntilMs - clockNow);
@@ -987,9 +1296,7 @@ export function RoomPlayPage() {
     }
 
     const shouldClear =
-      state?.state === "waiting" ||
-      state?.state === "results" ||
-      state?.state === undefined;
+      state?.state === "waiting" || state?.state === "results" || state?.state === undefined;
     if (shouldClear) {
       setStableAnimeVideoPlayback(null);
     }
@@ -997,8 +1304,13 @@ export function RoomPlayPage() {
 
   const activeYoutubeEmbed = stableYoutubePlayback?.embedUrl ?? null;
   const activeAnimeVideoSource = stableAnimeVideoPlayback?.sourceUrl ?? null;
+  const nextAnimeVideoSource =
+    state?.nextMedia?.provider === "animethemes" ? (state.nextMedia.sourceUrl ?? null) : null;
   const usingYouTubePlayback = Boolean(activeYoutubeEmbed);
   const usingAnimeVideoPlayback = Boolean(activeAnimeVideoSource);
+  const canPreloadNextAnime =
+    Boolean(nextAnimeVideoSource) &&
+    (animePlaybackStatus === "ready" || animePlaybackStatus === "playing");
   const revealVideoActive =
     (usingYouTubePlayback || usingAnimeVideoPlayback) &&
     state?.state !== "waiting" &&
@@ -1006,7 +1318,8 @@ export function RoomPlayPage() {
     state?.state !== "playing" &&
     state?.state !== "results";
   const isResults = state?.state === "results";
-  const hasServerLockedGuess = state?.state === "playing" && Boolean(currentPlayer?.hasAnsweredCurrentRound);
+  const hasServerLockedGuess =
+    state?.state === "playing" && Boolean(currentPlayer?.hasAnsweredCurrentRound);
   const mcqLocked =
     state?.state === "playing" &&
     state.mode === "mcq" &&
@@ -1030,23 +1343,18 @@ export function RoomPlayPage() {
     !session.playerId ||
     Boolean(currentPlayer?.hasAnsweredCurrentRound) ||
     hasLockedGuessVote;
-  const skipRevealDisabled =
-    skipMutation.isPending ||
-    !session.playerId ||
-    hasLockedRevealVote;
+  const skipRevealDisabled = skipMutation.isPending || !session.playerId || hasLockedRevealVote;
+
+  function markAnimeProgress() {
+    animeLastProgressAtRef.current = Date.now();
+  }
 
   function handleAnimeMediaUnavailable(input?: { force?: boolean }) {
     const force = input?.force === true;
     setAudioError(true);
-    if (!force && state?.media?.provider === "animethemes") {
-      const errorKey = `${state.round}:${state.media.trackId}`;
-      const previous = animeMediaErrorRef.current;
-      const count = previous?.key === errorKey ? previous.count + 1 : 1;
-      animeMediaErrorRef.current = { key: errorKey, count };
-      if (count < ANIME_MEDIA_ERROR_THRESHOLD) {
-        setAnimePlaybackStatus("buffering");
-        return;
-      }
+    if (!force) {
+      setAnimePlaybackStatus("buffering");
+      return;
     }
     const video = animeVideoRef.current;
     if (video) {
@@ -1056,11 +1364,20 @@ export function RoomPlayPage() {
     }
     if (state?.media?.provider === "animethemes") {
       failedAnimeTrackKeyRef.current = `${state.media.provider}:${state.media.trackId}`;
+      notify.error("Lecture du theme impossible. Passage automatique au round suivant...", {
+        key: `room-play:anime-unavailable:${roomCode}:${state.media.trackId}`,
+      });
     }
     setStableAnimeVideoPlayback(null);
     if (!session.playerId) return;
     if (!state?.media || state.media.provider !== "animethemes") return;
-    if (state.state !== "loading" && state.state !== "playing" && state.state !== "reveal" && state.state !== "leaderboard") return;
+    if (
+      state.state !== "loading" &&
+      state.state !== "playing" &&
+      state.state !== "reveal" &&
+      state.state !== "leaderboard"
+    )
+      return;
 
     const reportKey = `${state.state}:${state.round}:${state.media.trackId}`;
     if (reportedUnavailableMediaRef.current === reportKey) return;
@@ -1068,6 +1385,11 @@ export function RoomPlayPage() {
 
     reportedUnavailableMediaRef.current = reportKey;
     mediaUnavailableMutation.mutate(state.media.trackId);
+  }
+
+  function handleAnimePlaybackIssue() {
+    setAudioError(true);
+    setAnimePlaybackStatus("buffering");
   }
 
   function applyAnimeRandomStart(video: HTMLVideoElement) {
@@ -1110,6 +1432,7 @@ export function RoomPlayPage() {
     if (!video) return;
     setAnimePlaybackStatus("buffering");
     applyAnimeRandomStart(video);
+    markAnimeProgress();
   }
 
   function handleAnimeLoadedData() {
@@ -1118,6 +1441,7 @@ export function RoomPlayPage() {
       applyAnimeRandomStart(video);
       setAnimePlaybackStatus("ready");
     }
+    markAnimeProgress();
     signalAnimeMediaReady();
   }
 
@@ -1127,6 +1451,7 @@ export function RoomPlayPage() {
       applyAnimeRandomStart(video);
       setAnimePlaybackStatus("ready");
     }
+    markAnimeProgress();
     signalAnimeMediaReady();
   }
 
@@ -1136,6 +1461,7 @@ export function RoomPlayPage() {
       applyAnimeRandomStart(video);
     }
     setAnimePlaybackStatus("playing");
+    markAnimeProgress();
   }
 
   function handleAnimeWaiting() {
@@ -1162,16 +1488,19 @@ export function RoomPlayPage() {
     reportedMediaReadyRef.current = null;
     appliedAnimeStartRef.current = null;
     failedAnimeTrackKeyRef.current = null;
-    animeMediaErrorRef.current = null;
+    animeLongLoadToastRef.current = null;
     mediaReadyRetryRef.current = null;
+    setAudioError(false);
     if (mediaReadyRetryTimeoutRef.current !== null) {
       window.clearTimeout(mediaReadyRetryTimeoutRef.current);
       mediaReadyRetryTimeoutRef.current = null;
     }
     if (state?.state === "loading" && state.media?.provider === "animethemes") {
       setAnimePlaybackStatus("buffering");
+      animeLastProgressAtRef.current = Date.now();
     } else {
       setAnimePlaybackStatus("idle");
+      animeLastProgressAtRef.current = null;
     }
   }, [state?.state, state?.round, state?.media?.trackId]);
 
@@ -1237,6 +1566,21 @@ export function RoomPlayPage() {
     appliedAnimeStartRef.current = null;
     reportedMediaReadyRef.current = null;
     setAnimePlaybackStatus("buffering");
+    animeLastProgressAtRef.current = Date.now();
+  }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key]);
+
+  useEffect(() => {
+    const video = animeVideoRef.current;
+    if (!video || !activeAnimeVideoSource) return;
+
+    function onProgress() {
+      markAnimeProgress();
+    }
+
+    video.addEventListener("progress", onProgress);
+    return () => {
+      video.removeEventListener("progress", onProgress);
+    };
   }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key]);
 
   useEffect(() => {
@@ -1250,10 +1594,39 @@ export function RoomPlayPage() {
     if (playPromise) {
       playPromise.catch((error) => {
         console.error("anime_video_play_failed", error);
-        handleAnimeMediaUnavailable({ force: true });
+        handleAnimePlaybackIssue();
       });
     }
   }, [activeAnimeVideoSource, stableAnimeVideoPlayback?.key, state?.state]);
+
+  useEffect(() => {
+    const activeProvider = state?.media?.provider ?? state?.reveal?.provider ?? null;
+    if (!audioError) {
+      lastAudioErrorToastRef.current = null;
+      return;
+    }
+    if (activeProvider === "animethemes") {
+      return;
+    }
+    const trackId = state?.media?.trackId ?? state?.reveal?.trackId ?? "unknown";
+    const key = `room-play:playback-error:${roomCode}:${state?.state ?? "unknown"}:${trackId}:${activeProvider ?? "preview"}`;
+    if (lastAudioErrorToastRef.current === key) return;
+    lastAudioErrorToastRef.current = key;
+    notify.error(
+      activeProvider === "youtube"
+        ? "Lecture video impossible pour cette manche."
+        : "Erreur audio: extrait indisponible.",
+      { key },
+    );
+  }, [
+    audioError,
+    roomCode,
+    state?.media?.provider,
+    state?.media?.trackId,
+    state?.reveal?.provider,
+    state?.reveal?.trackId,
+    state?.state,
+  ]);
 
   useEffect(() => {
     if (!session.playerId) return;
@@ -1261,25 +1634,28 @@ export function RoomPlayPage() {
     if (!state.media || state.media.provider !== "animethemes") return;
     if (!usingAnimeVideoPlayback) return;
     if (animePlaybackStatus === "ready" || animePlaybackStatus === "playing") return;
-
-    const trackId = state.media.trackId;
-    const round = state.round;
-    const timeoutId = window.setTimeout(() => {
-      const reportKey = `timeout:${round}:${trackId}`;
-      if (reportedUnavailableMediaRef.current === reportKey) return;
-      if (mediaUnavailableMutation.isPending) return;
-      reportedUnavailableMediaRef.current = reportKey;
-      setAudioError(true);
-      mediaUnavailableMutation.mutate(trackId);
-    }, ANIME_LOADING_STALL_REPORT_MS);
-
+    const trackKey = `${state.round}:${state.media.trackId}`;
+    const intervalId = window.setInterval(() => {
+      const lastProgressAtMs = animeLastProgressAtRef.current ?? Date.now();
+      const stalledForMs = Math.max(0, Date.now() - lastProgressAtMs);
+      if (
+        stalledForMs >= ANIME_MEDIA_LONG_LOAD_TOAST_MS &&
+        animeLongLoadToastRef.current !== trackKey
+      ) {
+        animeLongLoadToastRef.current = trackKey;
+        notify.info("Chargement du theme plus long que prevu...", {
+          key: `room-play:anime-long-load:${roomCode}:${trackKey}`,
+        });
+      }
+      if (stalledForMs >= ANIME_MEDIA_EXTREME_TIMEOUT_MS) {
+        handleAnimeMediaUnavailable({ force: true });
+      }
+    }, 1_000);
     return () => {
-      window.clearTimeout(timeoutId);
+      window.clearInterval(intervalId);
     };
   }, [
     animePlaybackStatus,
-    mediaUnavailableMutation.isPending,
-    mediaUnavailableMutation.mutate,
     session.playerId,
     state?.media?.provider,
     state?.media?.trackId,
@@ -1287,6 +1663,44 @@ export function RoomPlayPage() {
     state?.state,
     usingAnimeVideoPlayback,
   ]);
+
+  useEffect(() => {
+    const selector = "link[data-kwizik-next-anime-preload='true']";
+    const head = document.head;
+    const existing = head.querySelector(selector) as HTMLLinkElement | null;
+
+    if (!canPreloadNextAnime || !nextAnimeVideoSource) {
+      existing?.remove();
+      const preloadVideo = nextAnimePreloadRef.current;
+      if (preloadVideo) {
+        preloadVideo.pause();
+        preloadVideo.removeAttribute("src");
+      }
+      return;
+    }
+
+    const link = existing ?? document.createElement("link");
+    link.setAttribute("data-kwizik-next-anime-preload", "true");
+    link.setAttribute("rel", "preload");
+    link.setAttribute("as", "video");
+    link.setAttribute("href", nextAnimeVideoSource);
+    if (!existing) {
+      head.appendChild(link);
+    }
+
+    const preloadVideo = nextAnimePreloadRef.current;
+    if (preloadVideo && preloadVideo.getAttribute("src") !== nextAnimeVideoSource) {
+      preloadVideo.setAttribute("src", nextAnimeVideoSource);
+      preloadVideo.load();
+    }
+  }, [canPreloadNextAnime, nextAnimeVideoSource]);
+
+  useEffect(() => {
+    return () => {
+      const link = document.head.querySelector("link[data-kwizik-next-anime-preload='true']");
+      link?.remove();
+    };
+  }, []);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -1390,7 +1804,13 @@ export function RoomPlayPage() {
   }, [state?.round]);
 
   useEffect(() => {
-    if (!state || state.state !== "playing" || state.mode !== "text" || !session.playerId || textLocked) {
+    if (
+      !state ||
+      state.state !== "playing" ||
+      state.mode !== "text" ||
+      !session.playerId ||
+      textLocked
+    ) {
       draftSignatureRef.current = null;
       return;
     }
@@ -1426,14 +1846,7 @@ export function RoomPlayPage() {
     autoSubmitSignatureRef.current = signature;
 
     answerMutation.mutate(value);
-  }, [
-    answer,
-    answerMutation,
-    clockNow,
-    session.playerId,
-    state,
-    textLocked,
-  ]);
+  }, [answer, answerMutation, clockNow, session.playerId, state, textLocked]);
 
   function onSubmitText(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1485,9 +1898,8 @@ export function RoomPlayPage() {
     });
 
     const envBase = import.meta.env.VITE_API_BASE_URL?.trim() ?? "";
-    const baseUrl = envBase.length > 0
-      ? envBase.replace(/\/+$/, "")
-      : `${window.location.origin}/api`;
+    const baseUrl =
+      envBase.length > 0 ? envBase.replace(/\/+$/, "") : `${window.location.origin}/api`;
     const target = `${baseUrl}/quiz/leave`;
 
     try {
@@ -1541,6 +1953,7 @@ export function RoomPlayPage() {
         dispatchLeaveSignal();
       }
     }
+    notify.info("Tu as quitte la room.");
     clearSession();
     navigate({ to: "/" });
   }
@@ -1562,7 +1975,10 @@ export function RoomPlayPage() {
             {state?.leaderboard && state.leaderboard.length > 0 ? (
               <ol className="leaderboard-list compact">
                 {state.leaderboard.map((entry) => (
-                  <li key={entry.playerId} className={entry.hasAnsweredCurrentRound ? "answered" : ""}>
+                  <li
+                    key={entry.playerId}
+                    className={entry.hasAnsweredCurrentRound ? "answered" : ""}
+                  >
                     <span>#{entry.rank}</span>
                     <div className="leaderboard-player-block">
                       <strong className="leaderboard-name">
@@ -1573,20 +1989,22 @@ export function RoomPlayPage() {
                           </i>
                         )}
                       </strong>
-                      {showRevealAnswersInLeaderboard && (() => {
-                        const revealAnswer = revealAnswerByPlayerId.get(entry.playerId);
-                        if (!revealAnswer) return null;
-                        const label = revealAnswer.submitted && revealAnswer.answer
-                          ? withRomajiLabel(revealAnswer.answer)
-                          : "Pas de réponse";
-                        return (
-                          <small
-                            className={`leaderboard-reveal-answer${revealAnswer.isCorrect ? " correct" : revealAnswer.submitted ? " wrong" : ""}`}
-                          >
-                            {label}
-                          </small>
-                        );
-                      })()}
+                      {showRevealAnswersInLeaderboard &&
+                        (() => {
+                          const revealAnswer = revealAnswerByPlayerId.get(entry.playerId);
+                          if (!revealAnswer) return null;
+                          const label =
+                            revealAnswer.submitted && revealAnswer.answer
+                              ? withRomajiLabel(revealAnswer.answer)
+                              : "Pas de réponse";
+                          return (
+                            <small
+                              className={`leaderboard-reveal-answer${revealAnswer.isCorrect ? " correct" : revealAnswer.submitted ? " wrong" : ""}`}
+                            >
+                              {label}
+                            </small>
+                          );
+                        })()}
                     </div>
                     <div className="leaderboard-score-block">
                       <em>{entry.score} pts</em>
@@ -1617,7 +2035,9 @@ export function RoomPlayPage() {
                 <strong>Manche {roundLabel}</strong>
               </div>
 
-              <div className={`sound-visual media-shell${revealVideoActive ? " reveal-active" : ""}`}>
+              <div
+                className={`sound-visual media-shell${revealVideoActive ? " reveal-active" : ""}`}
+              >
                 {activeAnimeVideoSource && (
                   <video
                     ref={animeVideoRef}
@@ -1632,7 +2052,7 @@ export function RoomPlayPage() {
                     onPlaying={handleAnimePlaying}
                     onWaiting={handleAnimeWaiting}
                     onStalled={handleAnimeWaiting}
-                    onError={handleAnimeMediaUnavailable}
+                    onError={handleAnimePlaybackIssue}
                   />
                 )}
                 {activeYoutubeEmbed && (
@@ -1649,7 +2069,9 @@ export function RoomPlayPage() {
                   />
                 )}
                 <div className="media-wave-layer" aria-hidden="true">
-                  <div className={`wave-bars${usingAnimeVideoPlayback ? " wave-bars-fallback" : ""}`}>
+                  <div
+                    className={`wave-bars${usingAnimeVideoPlayback ? " wave-bars-fallback" : ""}`}
+                  >
                     {WAVE_BARS.map((bar) => (
                       <span
                         key={bar.key}
@@ -1669,10 +2091,13 @@ export function RoomPlayPage() {
                     <span className="resolving-tracks-spinner" aria-hidden="true" />
                     <p>Chargement de la video...</p>
                     <small>
-                      {animePlaybackStatus === "playing" ? "Lecture demarree" : "Buffering en cours"}
+                      {animePlaybackStatus === "playing"
+                        ? "Lecture demarree"
+                        : "Buffering en cours"}
                     </small>
                     <small>
-                      {state.mediaReadyCount}/{state.mediaReadyTotalCount} pret{state.mediaReadyTotalCount > 1 ? "s" : ""}
+                      {state.mediaReadyCount}/{state.mediaReadyTotalCount} pret
+                      {state.mediaReadyTotalCount > 1 ? "s" : ""}
                     </small>
                   </div>
                 )}
@@ -1710,7 +2135,8 @@ export function RoomPlayPage() {
                   {sourceMode === "anilist_union" && (
                     <div className="panel-form">
                       <p className="status">
-                        Les bibliotheques AniList synchronisees des joueurs sont utilisees automatiquement.
+                        Les bibliotheques AniList synchronisees des joueurs sont utilisees
+                        automatiquement.
                       </p>
                     </div>
                   )}
@@ -1762,7 +2188,11 @@ export function RoomPlayPage() {
                 </p>
                 <p>
                   <span>Playlist</span>
-                  <strong>{withRomajiLabel(state.sourceConfig.publicPlaylist?.name ?? "Aucune playlist selectionnee")}</strong>
+                  <strong>
+                    {withRomajiLabel(
+                      state.sourceConfig.publicPlaylist?.name ?? "Aucune playlist selectionnee",
+                    )}
+                  </strong>
                 </p>
                 <p>
                   <span>Mode thèmes</span>
@@ -1815,7 +2245,8 @@ export function RoomPlayPage() {
                     <div>
                       <strong>{player.displayName}</strong>
                       <p>
-                        {player.isHost ? "Host" : "Joueur"} - {player.isReady ? "Prêt" : "En attente"}
+                        {player.isHost ? "Host" : "Joueur"} -{" "}
+                        {player.isReady ? "Prêt" : "En attente"}
                       </p>
                     </div>
                     {isHost && player.playerId !== session.playerId && (
@@ -1880,7 +2311,11 @@ export function RoomPlayPage() {
                         ? "Chargement des animes..."
                         : "Aucune suggestion"
                   }
-                  isLoading={typedAnswer.length >= 1 && answerSeedIsLoading && answerSelectOptions.length <= 0}
+                  isLoading={
+                    typedAnswer.length >= 1 &&
+                    answerSeedIsLoading &&
+                    answerSelectOptions.length <= 0
+                  }
                   openMenuOnFocus
                   blurInputOnSelect={false}
                   isDisabled={textLocked || answerMutation.isPending}
@@ -1907,38 +2342,40 @@ export function RoomPlayPage() {
                 {hasLockedGuessVote ? "En attente des autres..." : "Skip"}
               </button>
               <p className="status">
-                Validation: <strong>{state.guessDoneCount}/{state.guessTotalCount}</strong>
+                Validation:{" "}
+                <strong>
+                  {state.guessDoneCount}/{state.guessTotalCount}
+                </strong>
               </p>
             </div>
           )}
 
-          {(state?.state === "reveal" || state?.state === "leaderboard") &&
-            state?.reveal && (
-              <div className="reveal-box large reveal-glass">
-                <div className="reveal-cover">
-                  {revealArtwork ? (
-                    <img src={revealArtwork} alt={`${state.reveal.title} cover`} />
-                  ) : (
-                    <div className="reveal-cover-fallback" aria-hidden="true" />
-                  )}
-                </div>
-                <div className="reveal-content">
-                  <p className="kicker">Reveal</p>
-                  <h3 className="reveal-title">
-                    {withRomajiLabel(state.reveal.title, state.reveal.titleRomaji)}
-                  </h3>
-                  {state.reveal.songTitle && (
-                    <p className="reveal-song-title">{state.reveal.songTitle}</p>
-                  )}
-                  {state.reveal.songArtists.length > 0 && (
-                    <p className="reveal-song-artists">{state.reveal.songArtists.join(", ")}</p>
-                  )}
-                  <p className="reveal-artist">
-                    {withRomajiLabel(state.reveal.artist, state.reveal.artistRomaji)}
-                  </p>
-                </div>
+          {(state?.state === "reveal" || state?.state === "leaderboard") && state?.reveal && (
+            <div className="reveal-box large reveal-glass">
+              <div className="reveal-cover">
+                {revealArtwork ? (
+                  <img src={revealArtwork} alt={`${state.reveal.title} cover`} />
+                ) : (
+                  <div className="reveal-cover-fallback" aria-hidden="true" />
+                )}
               </div>
-            )}
+              <div className="reveal-content">
+                <p className="kicker">Reveal</p>
+                <h3 className="reveal-title">
+                  {withRomajiLabel(state.reveal.title, state.reveal.titleRomaji)}
+                </h3>
+                {state.reveal.songTitle && (
+                  <p className="reveal-song-title">{state.reveal.songTitle}</p>
+                )}
+                {state.reveal.songArtists.length > 0 && (
+                  <p className="reveal-song-artists">{state.reveal.songArtists.join(", ")}</p>
+                )}
+                <p className="reveal-artist">
+                  {withRomajiLabel(state.reveal.artist, state.reveal.artistRomaji)}
+                </p>
+              </div>
+            </div>
+          )}
 
           {state?.state === "reveal" && (
             <div className="phase-skip-panel">
@@ -1951,7 +2388,10 @@ export function RoomPlayPage() {
                 {hasLockedRevealVote ? "En attente des autres..." : "Next"}
               </button>
               <p className="status">
-                Votes Next: <strong>{state.revealSkipCount}/{state.revealSkipTotalCount}</strong>
+                Votes Next:{" "}
+                <strong>
+                  {state.revealSkipCount}/{state.revealSkipTotalCount}
+                </strong>
               </p>
             </div>
           )}
@@ -1977,7 +2417,11 @@ export function RoomPlayPage() {
                   Quitter la room
                 </button>
                 {isHost ? (
-                  <button className="solid-btn" type="button" onClick={() => replayMutation.mutate()}>
+                  <button
+                    className="solid-btn"
+                    type="button"
+                    onClick={() => replayMutation.mutate()}
+                  >
                     {replayMutation.isPending ? "Retour lobby..." : "Rejouer"}
                   </button>
                 ) : (
@@ -1986,66 +2430,6 @@ export function RoomPlayPage() {
               </div>
             </div>
           )}
-
-          <p
-            className={
-              snapshotQuery.isError ||
-              answerMutation.isError ||
-              (startMutation.isError && !isNonBlockingStartError) ||
-              sourceModeMutation.isError ||
-              themeModeMutation.isError ||
-              publicPlaylistMutation.isError ||
-              chatMutation.isError ||
-              readyMutation.isError ||
-              kickMutation.isError ||
-              replayMutation.isError ||
-              skipMutation.isError
-                ? "status error"
-                : "status"
-            }
-          >
-            {startErrorCode === "NO_TRACKS_FOUND" &&
-              "Aucune chanson jouable trouvée pour le moment. Réessaie dans quelques secondes."}
-            {startErrorCode === "SPOTIFY_RATE_LIMITED" &&
-              `Spotify limite temporairement les requêtes. Réessaye dans ${spotifyCooldownRemainingSec}s.`}
-            {startErrorCode === "SOURCE_NOT_SET" && "Le host doit choisir une playlist avant de lancer."}
-            {startErrorCode === "PLAYER_NOT_FOUND" && "Ta session joueur a expiré. Rejoins la room."}
-            {startErrorCode === "PLAYERS_LIBRARY_NOT_READY" &&
-              "Le mode AniList nécessite au moins un joueur avec une bibliothèque AniList synchronisée."}
-            {isWaitingLobby &&
-              (state?.sourceMode === "players_liked" || state?.sourceMode === "anilist_union") &&
-              state.poolBuild.status === "building" &&
-              "Préparation de la playlist des joueurs... lancement automatique dès que c'est prêt."}
-            {isWaitingLobby &&
-              (state?.sourceMode === "players_liked" || state?.sourceMode === "anilist_union") &&
-              startRetryRemainingMs > 0 &&
-              "Préparation de la playlist des joueurs... lancement automatique dès que c'est prêt."}
-            {isWaitingLobby &&
-              state?.sourceMode === "public_playlist" &&
-              startRetryRemainingMs > 0 &&
-              "Préparation de la playlist... lancement automatique dès que c'est prêt."}
-            {startErrorCode === "HOST_ONLY" && "Seul le host peut lancer la partie."}
-            {sourceModeErrorCode === "HOST_ONLY" && "Seul le host peut changer le mode source."}
-            {themeModeErrorCode === "HOST_ONLY" && "Seul le host peut changer le mode thèmes."}
-            {publicPlaylistErrorCode === "HOST_ONLY" && "Seul le host peut choisir la playlist publique."}
-            {readyErrorCode === "INVALID_STATE" && "Le statut prêt se gère uniquement dans le lobby."}
-            {readyErrorCode === "PLAYER_NOT_FOUND" && "Ta session joueur a expiré. Rejoins la room."}
-            {kickErrorCode === "HOST_ONLY" && "Seul le host peut éjecter un joueur."}
-            {replayErrorCode === "HOST_ONLY" && "Seul le host peut relancer une partie."}
-            {skipErrorCode === "INVALID_STATE" && "Le vote Skip/Next n'est pas disponible dans cet état."}
-            {chatMutation.isError && "Impossible d'envoyer le message."}
-            {!session.playerId && "Tu dois rejoindre la room pour répondre."}
-            {snapshotQuery.isError && "Synchronisation impossible."}
-            {answerErrorCode === "ANSWER_NOT_ACCEPTED" &&
-              "Réponse non prise en compte (round expiré ou déjà validé)."}
-            {answerMutation.isError && answerErrorCode !== "ANSWER_NOT_ACCEPTED" && "Réponse refusée."}
-            {mediaUnavailableMutation.isPending &&
-              "Thème indisponible détecté, passage automatique au round suivant..."}
-            {mediaUnavailableMutation.isError &&
-              "Signalement du thème indisponible impossible. Utilise Skip pour continuer."}
-            {audioError && usingAnimeVideoPlayback && "Erreur média: thème indisponible."}
-            {audioError && !usingYouTubePlayback && !usingAnimeVideoPlayback && "Erreur audio: extrait indisponible."}
-          </p>
         </div>
 
         {!isResults && (
@@ -2087,6 +2471,17 @@ export function RoomPlayPage() {
           </aside>
         )}
       </article>
+
+      <video
+        ref={nextAnimePreloadRef}
+        className="blindtest-preload-video"
+        preload="auto"
+        muted
+        playsInline
+        aria-hidden="true"
+      >
+        <track kind="captions" />
+      </video>
 
       <audio
         ref={audioRef}
